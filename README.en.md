@@ -79,16 +79,16 @@ Full report: [docs/computer-use-test-report.md](docs/computer-use-test-report.md
 
 ```toml
 # --- MCP: Vision Primitives MCP ---
-[mcp_servers.vision-bridge]
+[mcp_servers.vision-primitives]
 command = "python"
-args = ['/path/to/vision-bridge-mcp/vision_bridge_mcp.py']
+args = ['/path/to/vision-primitives-mcp/vision_primitives_mcp.py']
 startup_timeout_sec = 60
 
-[mcp_servers.vision-bridge.env]
+[mcp_servers.vision-primitives.env]
 VISION_API_BASE = "https://api.xiaomimimo.com/v1"
 VISION_API_KEY = "sk-your-xiaomi-mimo-key"
 VISION_MODEL = "mimo-v2.5"
-VISION_OUTPUT_DIR = '/path/to/vision-bridge-mcp/generated'
+VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 ```
 
 Restart Codex, verify with `vision_health`. Works with any MCP client (Codex, HanaAgent, Claude Code, etc.).
@@ -130,7 +130,7 @@ Model (Codex):
 | Capability | Result |
 |---|---|
 | Describe | Excellent: layout, objects, text, colors all accurate |
-| Locate | Simple geometric shapes (circle [120,320,220,420]) **perfectly accurate**; complex elements (rounded buttons) off by ~20-40px — for critical tasks use `VISION_SAMPLES=3` or `refine`, verify manually after drawing |
+| Locate | Simple geometric shapes (circles/color blocks) 0~60px (sampling variance); complex elements (rounded buttons) 20-70px; ~20px after `refine` (y exact) — for critical tasks use `VISION_SAMPLES=3` or `refine`, verify manually after drawing |
 | OCR | Accurate in both Chinese & English (test image text, "submit" button, LED display train numbers/station names all read correctly), per-block output with bbox |
 | Annotate/Crop/Zoom | Programmatic pixel verification passed (box lines hit, crop sizes correct) |
 | Latency | ~15-25s per vision call (MiMo is reasoning-type), ~2min for a full closed loop |
@@ -156,7 +156,8 @@ python test\e2e_mimo.py
 
 ```
 vision-bridge-mcp/
-├── vision_bridge_mcp.py   # MCP server (single-file implementation)
+├── vision_primitives_mcp.py   # MCP server (single-file implementation)
+├── vision_bridge_mcp.py   # compat shim (deprecated, old config paths still work)
 ├── sample.png             # test sample image
 ├── README.md / README.en.md
 ├── .env.example

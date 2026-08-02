@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 
 CFG = Path.home() / ".codex" / "config.toml"
-SCRIPT = Path(__file__).resolve().parent.parent / "vision_bridge_mcp.py"
+SCRIPT = Path(__file__).resolve().parent.parent / "vision_primitives_mcp.py"
 
 
 def main():

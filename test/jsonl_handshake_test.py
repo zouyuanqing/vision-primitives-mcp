@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""JSONL 协议握手测试：验证修改后的 vision_bridge_mcp.py 支持 Hana 风格的换行分隔 MCP 消息。"""
+"""JSONL 协议握手测试：验证修改后的 vision_primitives_mcp.py 支持 Hana 风格的换行分隔 MCP 消息。"""
 import json
 import os
 import queue
@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER = ROOT / "vision_bridge_mcp.py"
+SERVER = ROOT / "vision_primitives_mcp.py"
 
 env = os.environ.copy()
 env["VISION_API_KEY"] = env.get("VISION_API_KEY", "sk-test")

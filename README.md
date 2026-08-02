@@ -79,17 +79,17 @@
 ### 1. 在 `~/.codex/config.toml` 追加
 
 ```toml
-# --- MCP: Vision Bridge ---
-[mcp_servers.vision-bridge]
+# --- MCP: Vision Primitives MCP ---
+[mcp_servers.vision-primitives]
 command = "python"
-args = ['/path/to/vision-bridge-mcp/vision_bridge_mcp.py']
+args = ['/path/to/vision-primitives-mcp/vision_primitives_mcp.py']
 startup_timeout_sec = 60
 
-[mcp_servers.vision-bridge.env]
+[mcp_servers.vision-primitives.env]
 VISION_API_BASE = "https://api.xiaomimimo.com/v1"
 VISION_API_KEY = "sk-你的小米MiMo密钥"
 VISION_MODEL = "mimo-v2.5"
-VISION_OUTPUT_DIR = '/path/to/vision-bridge-mcp/generated'
+VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 ```
 
 重启 Codex 后生效，用 `vision_health` 验证。
@@ -131,7 +131,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-bridge-mcp/generated'
 | 能力 | 实测表现 |
 |---|---|
 | 描述（describe） | 优秀：布局、对象、文字、颜色全部准确 |
-| 定位（locate） | 简单几何图形（圆形 [120,320,220,420]）**完全精确**；复杂元素（圆角按钮）偏移约 20-40px —— 建议关键任务开 `VISION_SAMPLES=3` 或切 `mimo-v2.5-pro`，圈画后人工核对 |
+| 定位（locate） | 简单几何图形（圆形/色块）0~60px（采样波动）；复杂元素（圆角按钮）20-70px；`refine` 后约 20px（y 方向精确）—— 关键任务开 `VISION_SAMPLES=3` 或 `refine`，圈画后人工核对 |
 | OCR | 中英文均准确（"你好，视觉桥接插件测试图"、"提交"及 LED 屏车次/站名全部正确读取），返回带 bbox 的逐块文字 |
 | 标注/裁切/放大 | 程序化像素验证通过（框线命中、裁切尺寸正确） |
 | 延迟 | 单次视觉调用约 15-25 秒（MiMo 推理型），完整闭环约 2 分钟 |
@@ -157,7 +157,8 @@ python test\e2e_mimo.py
 
 ```
 vision-bridge-mcp/
-├── vision_bridge_mcp.py   # MCP server（单文件实现）
+├── vision_primitives_mcp.py   # MCP server（单文件实现）
+├── vision_bridge_mcp.py   # 兼容入口（deprecated，旧配置路径仍可用）
 ├── sample.png             # 测试样例图
 ├── README.md / README.en.md   # 中英双语说明
 ├── .env.example

@@ -114,7 +114,7 @@ def test_protocol_over_stdio(api_base):
         "VISION_TIMEOUT_S": "10",
     })
     proc = subprocess.Popen(
-        [sys.executable, str(ROOT / "vision_bridge_mcp.py")],
+        [sys.executable, str(ROOT / "vision_primitives_mcp.py")],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=env,
     )
@@ -175,7 +175,7 @@ def test_protocol_over_stdio(api_base):
             proc.kill()
 
 def test_request_body(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     MockVisionHandler.responses.append("ok")
     img = make_img(200, 100)
@@ -190,7 +190,7 @@ def test_request_body(api_base):
     check("req prompt has size", "200px" in msg["content"][0]["text"] and "100px" in msg["content"][0]["text"], msg["content"][0]["text"][:100])
 
 def test_cache_hit(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     MockVisionHandler.responses.append("第一次")
     p = tmp_png("cache.png", make_img(64, 64))
@@ -201,7 +201,7 @@ def test_cache_hit(api_base):
     check("cache content", r1 == "第一次", r1)
 
 def test_analyze_primitives(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     MockVisionHandler.responses.append(json.dumps({
         "description": "有按钮",
@@ -222,7 +222,7 @@ def test_analyze_primitives(api_base):
 
 
 def test_locate_refine(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     img = make_img(400, 300, (240, 240, 240))
     p = tmp_png("refine.png", img)
@@ -237,7 +237,7 @@ def test_locate_refine(api_base):
     check("refine two calls", MockVisionHandler.vision_calls == 2, str(MockVisionHandler.vision_calls))
 
 def test_locate_coords(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     img = make_img(200, 100)
     p = tmp_png("locate.png", img)
     reset_mock()
@@ -254,7 +254,7 @@ def test_locate_coords(api_base):
     check("locate empty", res["count"] == 0 and "未找到" in res.get("note", ""), str(res))
 
 def test_ocr(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     MockVisionHandler.responses.append(json.dumps([
         {"text": "提交", "box": [120, 180, 300, 240]},
@@ -268,7 +268,7 @@ def test_ocr(api_base):
     check("ocr box", res["items"][0]["box_pixel"] == [120, 180, 300, 240], str(res["items"]))
 
 def test_annotate(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     from PIL import Image
     img = make_img(200, 100, (255, 255, 255))
     p = tmp_png("ann.png", img)
@@ -282,7 +282,7 @@ def test_annotate(api_base):
     check("annotate red line", px == (255, 59, 48), str(px))
 
 def test_crop(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     img = make_img(200, 100)
     p = tmp_png("crop.png", img)
     out = Path(os.environ["VISION_OUTPUT_DIR"]) / "crop-out.png"
@@ -295,7 +295,7 @@ def test_crop(api_base):
     check("crop default path in out dir", str(Path(res3["path"]).parent) == str(Path(os.environ["VISION_OUTPUT_DIR"])), str(res3["path"]))
 
 def test_zoom(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     img = make_img(200, 100)
     p = tmp_png("zoom.png", img)
     res = vb.tool_zoom_region({"image": p, "box": [0, 0, 100, 50], "scale": 2})
@@ -305,7 +305,7 @@ def test_zoom(api_base):
 
 
 def test_extract_json_robust():
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     r1 = vb.extract_json('{"a":1} 多余文字')
     check("ej tail", r1 == {"a": 1}, str(r1))
     r2 = vb.extract_json('{"visual_primitives":[{"box":[200,100,300,900]}]}\n最终答案是 boxed')
@@ -316,7 +316,7 @@ def test_extract_json_robust():
     check("ej fence", r4 == {"c": 3}, str(r4))
 
 def test_coord_utils():
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     pts, clamped = vb.to_pixel([500, 500, 1000, 1000], 800, 500, "norm")
     check("norm->pixel", pts == [400, 250, 800, 500] and clamped is False, str(pts))
     pts, clamped = vb.to_pixel([-5, 0, 9999, 100], 800, 500, "pixel")
@@ -324,7 +324,7 @@ def test_coord_utils():
     check("to_norm", vb.to_norm([400, 250, 800, 500], 800, 500) == [500, 500, 1000, 1000], str(vb.to_norm([400, 250, 800, 500], 800, 500)))
 
 def test_validation(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     try:
         vb.tool_describe_image({"image": str(TMP / "nope.png")})
         check("validation missing file", False, "should raise")
@@ -353,7 +353,7 @@ def test_validation(api_base):
 
 
 def test_fit_model_norm():
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     from PIL import Image
     img = Image.new("RGB", (800, 500))
     old_norm, old_max = vb.NORM_SIZE, vb.MAX_MODEL_SIDE
@@ -368,7 +368,7 @@ def test_fit_model_norm():
         vb.NORM_SIZE, vb.MAX_MODEL_SIDE = old_norm, old_max
 
 def test_median_aggregation():
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     # 两次采样：同一目标（不同 label/轻微坐标抖动）+ 一个独立目标
     b1 = [
         {"label": "按钮", "type": "box", "box_pixel": [100, 200, 300, 240], "confidence": 0.9},
@@ -387,7 +387,7 @@ def test_median_aggregation():
 
 
 def test_prompt_upgrade(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     MockVisionHandler.responses.append(json.dumps({"visual_primitives": []}))
     img = make_img(200, 100)
@@ -400,12 +400,12 @@ def test_prompt_upgrade(api_base):
     check("locate prompt all targets", "所有可疑目标" in text, text[:200])
 
 def test_normalize_rotation(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     prims = vb.normalize_primitives([{"label": "x", "type": "box", "box": [0, 0, 10, 10], "rotation": 12.5}], 100, 100)
     check("normalize keeps rotation", prims[0]["rotation"] == 12.5, str(prims))
 
 def test_scan_anomalies(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     img = make_img(800, 500, (240, 240, 240))
     p = tmp_png("scan.png", img)
@@ -429,7 +429,7 @@ def test_scan_anomalies(api_base):
 
 
 def test_annotate_infer_v16(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     from PIL import Image
     reset_mock()
     MockVisionHandler.responses.append("ok")
@@ -482,7 +482,7 @@ def test_annotate_infer_v16(api_base):
     check("v16 auto in applied", any(a.get("label") == "按钮" for a in res4["applied"]), str(res4.get("applied")))
 
 def test_annotate_infer(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     from PIL import Image
     reset_mock()
     # virtual 模式
@@ -524,7 +524,7 @@ def test_annotate_infer(api_base):
 
 
 def test_screen_use(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     # 安全开关默认关闭：所有控制类工具必须拒绝
     for tool, args in [
         ("screen_click", {"x": 10, "y": 10}),
@@ -550,7 +550,7 @@ def test_screen_use(api_base):
         check("screen capture file", False, str(e)[:200])
 
 def test_compare_infer(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     MockVisionHandler.responses.append("图1是输入级，图2是负载级，整体构成电源链路。")
     img = make_img(200, 100)
@@ -570,7 +570,7 @@ def test_compare_infer(api_base):
     check("ci applied", len(res["applied_per_image"]) == 2 and len(res["applied_per_image"][0]) == 1, str(res.get("applied_per_image")))
 
 def test_reason_graph(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     img = make_img(400, 300, (240, 240, 240))
     p = tmp_png("rg.png", img)
@@ -611,7 +611,7 @@ def test_reason_graph(api_base):
         check("rg bad step", "不支持的 step" in str(e), str(e))
 
 def test_compare_images(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     reset_mock()
     MockVisionHandler.responses.append("图1和图2的主要差异：背景色不同，按钮位置不同。")
     img = make_img(200, 100)
@@ -634,7 +634,7 @@ def test_compare_images(api_base):
         check("compare min images", "2-4 张" in str(e), str(e))
 
 def test_parse_verdict():
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     v1 = vb._parse_verdict("1) 是\n2) 约30度\n3) 5C\n4) 电阻")
     check("verdict numbered format", v1["verdict"] == "skewed" and v1["rotation"] == 30.0 and v1["silkscreen"] == "5C", str(v1))
     v2 = vb._parse_verdict("没有明显歪斜元件。")
@@ -643,7 +643,7 @@ def test_parse_verdict():
     check("verdict positive", v3["verdict"] == "skewed" and v3["rotation"] == 15.0 and v3["silkscreen"] == "A1142C", str(v3))
 
 def test_health(api_base):
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     res = vb.tool_vision_health()
     check("health ok", res["ok"] is True and res["model"] == "mimo-v2.5", str(res))
 
@@ -654,7 +654,7 @@ def main():
     os.environ["VISION_API_KEY"] = "test-key"
     os.environ["VISION_MODEL"] = "mimo-v2.5"
     os.environ["VISION_MAX_IMAGE_MB"] = "1"
-    import vision_bridge_mcp as vb
+    import vision_primitives_mcp as vb
     globals()["vb"] = vb
     print(f"mock server: {api_base}")
     print("== 协议（stdio 子进程） ==")

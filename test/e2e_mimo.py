@@ -16,7 +16,7 @@ os.environ.setdefault("VISION_API_BASE", "https://api.xiaomimimo.com/v1")
 os.environ.setdefault("VISION_MODEL", "mimo-v2.5")
 os.environ.setdefault("VISION_CACHE", "0")  # e2e 不缓存
 
-import vision_bridge_mcp as vb  # noqa: E402
+import vision_primitives_mcp as vb  # noqa: E402
 
 SAMPLE = ROOT / "sample.png"
 

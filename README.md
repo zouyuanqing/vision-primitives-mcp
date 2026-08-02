@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 26 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）。
+让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 27 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）。
 
 ```
 纯文本模型（推理与决策）
@@ -52,7 +52,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 `cv_locate`（颜色分割 + 连通域质心）：纯本地、零 API 调用、实测 0-4px。**仅适用简单目标**（纯色 UI 点击元素、几何图形、固定模板），泛化有限，通用目标请用 VLM 定位。
 
-## 工具一览（26 个）
+## 工具一览（27 个）
 
 | 分类 | 工具 | 作用 |
 |---|---|---|
@@ -61,7 +61,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 | | `som_locate` | **SoM 编号网格递归定位**（`final`: box/number/cv 三模式） |
 | | `cursor_locate` | 移动光标 + 视觉反馈循环定位（GUI-Cursor 范式） |
 | | `cv_locate` | **CV 备选**：颜色分割/模板匹配，像素级，仅简单目标 |
-| `ui_parse` / `ui_locate` | **UI 结构化解析 / 文本锚定定位**：OCR 文本块 + 控件检测 + 可选 YOLO，输出带编号元素列表 |
+| `ui_parse` / `ui_locate` / `ui_refine` | **UI 结构化解析 / 文本锚定定位 / 检测框语义编辑**：YOLO 像素级检测 + 文本锚定 + VLM 审查修正（删除误检/语义标注/程序化合并） |
 | 文字 | `ocr_image` | 逐文本块 OCR，带 bbox |
 | 图像处理 | `annotate_image` / `crop_image` / `zoom_region` | 标注 / 裁切 / 放大 |
 | 高级推理 | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | 多图对比 / 联合推理 / 交互式图形推理 / 虚拟标注推理 |
@@ -114,6 +114,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 - **延迟**：MiMo 推理型模型单次 15-25s；本地 Qwen3-VL 单次 3-10s；`cv_locate` 纯本地毫秒级
 - **`scan_anomalies` 角度估计不稳定**（10°-35° 波动），价值在多候选 + 逐点验证，最终需实物核对
 - **`cursor_locate` 在本地小模型上表现一般**（相对偏移估计有限），建议云端强模型
+- **`ui_refine` 的 VLM 审查建议云端强模型**（本地 8B 思考型输出长 JSON 可达数分钟）；程序化合并/去重部分无此限制
 - **`cv_locate` 泛化有限**：仅颜色/模板特征明显的简单目标；模板匹配对纯色（零纹理）目标退化（ZNCC 数学特性）
 - **平台**：屏幕控制 8 工具为 Windows-only（ctypes + ImageGrab），macOS/Linux 下仅截屏/信息可用
 - **SSRF 防护**：URL 图片默认拦截私网/链路本地/元数据地址（回环放行），`VISION_ALLOW_PRIVATE_NET=1` 放行；URL 来源图片解压后限 50MP（本地文件支持 200MP PCB）

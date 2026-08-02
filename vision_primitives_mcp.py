@@ -1020,6 +1020,14 @@ def tool_ui_parse(args):
                     inner_text = t
                     break
             ctype = "button" if inner_text else "input"
+            # 文字区域不误报为控件：与 text 元素重叠 >0.4 跳过
+            text_overlap = False
+            for e in elements:
+                if e["type"] == "text" and _iou(bbox, e["box"]) > 0.4:
+                    text_overlap = True
+                    break
+            if text_overlap:
+                continue
             # 排除与已有元素重叠度过高的
             dup = False
             for e in elements:
@@ -1034,7 +1042,7 @@ def tool_ui_parse(args):
             elements.append({"id": len(elements) + 1, "type": ctype, "text": inner_text, "box": bbox, "score": round(rect_ratio, 2)})
             used_ids.add(len(elements))
 
-    # ---- 3) 图标候选：中面积连通域、不在文本框内、矩形度低 ----
+    # ---- 3) 图标候选：中面积连通域、不在文本框内、矩形度低、不与已有元素重叠 ----
     for area, bbox, cent in comps:
         bw = bbox[2] - bbox[0]
         bh = bbox[3] - bbox[1]
@@ -1042,6 +1050,9 @@ def tool_ui_parse(args):
             continue
         in_text = any(_contained(bbox, tb) or _contained(tb, bbox) for _, tb in text_boxes)
         if in_text:
+            continue
+        dup = any(e["type"] != "icon" and _iou(bbox, e["box"]) > 0.3 for e in elements)
+        if dup:
             continue
         rect_ratio = area / max(1, bw * bh)
         if rect_ratio < 0.85:
@@ -1185,6 +1196,134 @@ CURSOR_PROMPT = (
     '如果光标已经对准目标中心（或本回合不应再移动），输出 {{"done": true}}'
 )
 
+
+
+# ----------------------------- UI 检测框语义编辑（v1.12）：VLM 审查修正检测结果 -----------------------------
+
+UI_REFINE_PROMPT = """图中叠加了红色编号框，每个框是一个检测到的 UI 元素候选。
+请审查检测结果，输出一个 JSON 对象（不要输出其他文字）：
+{{"remove": [明显误检的框 id 列表（如纯背景/文字残留/装饰元素）, 如 [2, 7]],
+  "labels": {{"框 id": "该元素的简短语义，如：登录按钮 / 设置图标 / 搜索输入框 / 页面标题"}},
+  "add": ["被漏检的目标描述（有文字的直接写文字，如：确认；没有文字的写外观描述，如：右上角齿轮图标）"]}}
+注意：不要删除真实存在的 UI 元素；相邻但独立的元素不要合并。没有任何修正时输出 {{"remove": [], "labels": {{}}, "add": []}}"""
+
+
+def _apply_refine(elements, refine):
+    """应用修正：程序化几何合并（重叠/包含 >0.6）+ VLM remove/labels。返回 (新列表, 变更记录)。"""
+    removed = set(refine.get("remove") or [])
+    labels = refine.get("labels") or {}
+
+    # 程序化几何合并：高度重叠或完全包含的框自动合并（确定性，不需要 VLM）
+    merged_ids = set()
+    merged_map = {}
+    by_id = {e["id"]: e for e in elements}
+    ids = sorted(by_id.keys())
+    for i in range(len(ids)):
+        if ids[i] in merged_ids:
+            continue
+        for j in range(i + 1, len(ids)):
+            a, b = by_id[ids[i]], by_id[ids[j]]
+            iou = _iou(a["box"], b["box"])
+            area_a = (a["box"][2] - a["box"][0]) * (a["box"][3] - a["box"][1])
+            area_b = (b["box"][2] - b["box"][0]) * (b["box"][3] - b["box"][1])
+            contain = (iou >= 0.6 or (min(area_a, area_b) / max(1, max(area_a, area_b)) > 0.85 and iou > 0.3))
+            if contain:
+                ub = [min(a["box"][0], b["box"][0]), min(a["box"][1], b["box"][1]),
+                      max(a["box"][2], b["box"][2]), max(a["box"][3], b["box"][3])]
+                merged_ids.add(ids[j])
+                merged_map.setdefault(ids[i], [ids[i]]).append(ids[j])
+                a["box"] = ub
+                texts = [str(by_id[k].get("text") or "") for k in (ids[i], ids[j]) if by_id[k].get("text")]
+                if texts:
+                    a["text"] = " ".join(t for t in texts if t)
+                a["merged"] = merged_map[ids[i]]
+                # 合并后与后续框重新比较（简单处理：不回溯，接受近似）
+
+    # labels：语义标注
+    for sid, lab in labels.items():
+        try:
+            sid = int(sid)
+        except (TypeError, ValueError):
+            continue
+        if sid in by_id and sid not in removed and sid not in merged_ids:
+            by_id[sid]["semantic"] = str(lab)
+
+    # remove
+    out = []
+    for e in elements:
+        if e["id"] in removed or e["id"] in merged_ids:
+            continue
+        out.append(e)
+    for i, e in enumerate(out):
+        e["id"] = i + 1
+    return out, {"removed": sorted(removed), "merged": [v for v in merged_map.values() if len(v) > 1],
+                 "labeled": len(labels), "before": len(elements), "after": len(out)}
+
+
+def tool_ui_refine(args):
+    """VLM 审查并语义修正检测框（ui_parse 结果）：删除误检 / 合并重复 / 语义标注 / 文本锚定补漏。
+
+    不做坐标微调（VLM 坐标不可靠，坐标级修正由 som/cv 负责）；只做 VLM 可靠的语义级修正。
+    """
+    img, raw, label = load_image(args["image"])
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    out_path = args.get("out_path")
+    parsed = tool_ui_parse({"image": args["image"], "coords": "pixel"})
+    elements = parsed.get("elements", [])
+
+    # 渲染叠加层给 VLM 审查
+    overlay = _render_overlay(img, elements, out_path)
+    text = call_chat([
+        {"role": "system", "content": AUX_VISION_SYSTEM},
+        image_message(UI_REFINE_PROMPT, Image.open(overlay)),
+    ])
+    try:
+        refine = extract_json(text)
+    except Exception as e:
+        refine = {}
+        log("ui_refine 解析失败:", str(e)[:120])
+    if not isinstance(refine, dict):
+        refine = {}
+
+    elements, changes = _apply_refine(elements, refine)
+
+    # add：文本锚定补漏（仅对有文字的目标；命中且不重叠才加入）
+    added = []
+    for desc in (refine.get("add") or []):
+        if not isinstance(desc, str) or not desc.strip():
+            continue
+        try:
+            loc = tool_ui_locate({"image": args["image"], "target": desc, "coords": "pixel"})
+            m = loc.get("matched")
+            if m and m.get("box"):
+                dup = any(_iou(m["box"], e["box"]) > 0.4 for e in elements)
+                if not dup:
+                    m["id"] = 0
+                    m["semantic"] = desc
+                    m["source"] = "add"
+                    added.append(m)
+        except Exception as e:
+            log("ui_refine add 失败:", str(e)[:120])
+    elements.extend(added)
+    for i, e in enumerate(elements):
+        e["id"] = i + 1
+
+    if coords == "norm":
+        for e in elements:
+            e["box"] = to_norm(e["box"], img.width, img.height)
+
+    result = {
+        "count": len(elements),
+        "elements": elements,
+        "changes": changes,
+        "added": added,
+        "overlay_image": overlay,
+        "image_size": [img.width, img.height],
+        "coords": coords,
+    }
+    return result
 
 def _render_som_grid(img, cols, rows):
     """在图上叠加编号网格标记，返回 (标记图, 格子列表[(x1,y1,x2,y2),...] 行优先)。"""
@@ -2830,6 +2969,7 @@ HANDLERS = {
     "cv_locate": tool_cv_locate,
     "ui_parse": tool_ui_parse,
     "ui_locate": tool_ui_locate,
+    "ui_refine": tool_ui_refine,
     "ocr_image": tool_ocr_image,
     "annotate_image": tool_annotate_image,
     "crop_image": tool_crop_image,
@@ -3131,6 +3271,19 @@ TOOLS = [
         },
     },
     {
+        "name": "ui_refine",
+        "description": "VLM 审查并语义修正 UI 检测框：删除误检 / 合并重复 / 语义标注 / 文本锚定补漏。不做坐标微调（坐标级修正由 som/cv 负责）。返回修正后元素列表与变更记录。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
+                "out_path": {"type": "string", "description": "保存审查用叠加层图（必须位于输出目录内）"},
+            },
+            "required": ["image"],
+        },
+    },
+    {
         "name": "compare_infer",
         "description": "多图联合推理（2-4 张）：每张图可带独立标注（items_per_image），联合对比/推理关系（差异、因果、时序、整体结论）。",
         "inputSchema": {
@@ -3265,7 +3418,7 @@ def handle_message(msg):
             "result": {
                 "protocolVersion": req_pv,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.11.0"},
+                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.12.0"},
             },
         }
     if method == "notifications/initialized":

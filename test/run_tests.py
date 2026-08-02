@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 26 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 27 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "ui_refine", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -850,6 +850,73 @@ def test_ui_locate_no_match(api_base):
     check("ui_locate no match", r.get("matched") is None, str(r)[:200])
 
 
+
+
+def test_ui_parse_text_not_control():
+    import vision_primitives_mcp as vb
+    # 只有文字（无控件边框）时，文字区域不应被误报为 button/input
+    reset_mock()
+    MockVisionHandler.responses.append(json.dumps([{"text": "仅文字", "box": [60, 60, 160, 90]}]))
+    img = make_img(300, 200, (245, 246, 250))
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(img)
+    d.text((65, 63), "仅文字", fill=(0, 0, 0))
+    p = tmp_png("ui_textonly.png", img)
+    r = vb.tool_ui_parse({"image": p, "coords": "pixel"})
+    types = [e["type"] for e in r.get("elements", [])]
+    check("ui_parse text not control", "button" not in types and "input" not in types, str(types))
+
+
+def test_ui_parse_no_dup_icon():
+    import vision_primitives_mcp as vb
+    # 同一区域不应同时是 input 和 icon
+    reset_mock()
+    MockVisionHandler.responses.append(json.dumps([]))
+    img = make_img(300, 200, (245, 246, 250))
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(img)
+    d.rectangle([50, 50, 120, 100], outline=(60, 60, 60), width=2)
+    d.ellipse([60, 60, 110, 90], fill=(200, 60, 60))  # 框内有图标
+    p = tmp_png("ui_dup.png", img)
+    r = vb.tool_ui_parse({"image": p, "coords": "pixel"})
+    boxes = [tuple(e["box"]) for e in r.get("elements", [])]
+    check("ui_parse no dup box", len(boxes) == len(set(boxes)), str(boxes))
+
+
+def test_apply_refine():
+    import vision_primitives_mcp as vb
+    els = [
+        {"id": 1, "type": "icon", "box": [10, 10, 100, 100]},
+        {"id": 2, "type": "icon", "box": [20, 20, 90, 90]},   # 包含在 1 内 -> 程序化合并
+        {"id": 3, "type": "input", "box": [200, 200, 300, 240]},
+        {"id": 4, "type": "icon", "box": [50, 300, 90, 340]},  # 与 3 不重叠
+    ]
+    refine = {"remove": [3], "labels": {"1": "设置图标"}}
+    out, changes = vb._apply_refine(els, refine)
+    check("refine remove", all(e["id"] != 3 for e in out), str(out))
+    check("refine merge", len(out) == 2, str(out))  # 1+2 合并，4 保留
+    check("refine merge box", out[0]["box"] == [10, 10, 100, 100], str(out[0]))
+    check("refine label", out[0].get("semantic") == "设置图标", str(out[0]))
+    check("refine counts", changes["before"] == 4 and changes["after"] == 2, str(changes))
+
+
+def test_ui_refine_e2e(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 顺序：ui_parse OCR(1) + ui_refine VLM 审查(1) + add 的 ui_locate OCR(1)
+    MockVisionHandler.responses.append(json.dumps([{"text": "登录", "box": [100, 80, 200, 110]}]))
+    MockVisionHandler.responses.append(json.dumps({"remove": [1], "merge": [], "labels": {"2": "登录按钮"}, "add": []}))
+    img = make_img(400, 300, (245, 246, 250))
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(img)
+    d.rectangle([60, 60, 280, 120], outline=(60, 60, 60), width=2)
+    d.text((100, 82), "登录", fill=(0, 0, 0))
+    p = tmp_png("ui_refine.png", img)
+    r = vb.tool_ui_refine({"image": p, "coords": "pixel"})
+    check("ui_refine count", r.get("count", 0) > 0, str(r)[:200])
+    check("ui_refine changes", r.get("changes", {}).get("before", 0) > 0, str(r.get("changes"))[:200])
+
+
 def test_health(api_base):
     import vision_primitives_mcp as vb
     res = vb.tool_vision_health()
@@ -926,6 +993,11 @@ def main():
     test_ui_parse_rect_detection()
     test_ui_locate_text_anchor()
     test_ui_locate_no_match(api_base)
+    print("== UI 检测框语义编辑 (v1.12) ==")
+    test_ui_parse_text_not_control()
+    test_ui_parse_no_dup_icon()
+    test_apply_refine()
+    test_ui_refine_e2e(api_base)
     print("== health ==")
     test_health(api_base)
     srv.shutdown()

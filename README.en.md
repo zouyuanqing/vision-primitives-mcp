@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 26 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**. Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present).
+Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 27 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**. Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present).
 
 ```
 text-only LLM (reasoning & decisions)
@@ -52,7 +52,7 @@ Each round overlays numbered marks; the model answers a number, then the region 
 
 `cv_locate` (color segmentation + connected-component centroid): pure-local, zero API calls, measured 0-4px. **Only for simple targets** (solid-color UI click elements, geometric shapes, fixed templates); limited generalization — use VLM locate for general targets.
 
-## Tool overview (26 tools)
+## Tool overview (27 tools)
 
 | Category | Tools | Purpose |
 |---|---|---|
@@ -61,7 +61,7 @@ Each round overlays numbered marks; the model answers a number, then the region 
 | | `som_locate` | **SoM numbered-grid recursive locate** (`final`: box/number/cv) |
 | | `cursor_locate` | cursor-move + visual-feedback loop locate (GUI-Cursor paradigm) |
 | | `cv_locate` | **CV fallback**: color segmentation / template matching, pixel-level, simple targets only |
-| `ui_parse` / `ui_locate` | **UI structured parsing / text-anchored locate**: OCR text blocks + control detection + optional YOLO, numbered element list |
+| `ui_parse` / `ui_locate` / `ui_refine` | **UI structured parsing / text-anchored locate / detection-box semantic editing**: YOLO pixel-level detection + text anchoring + VLM review (remove false positives / semantic labels / programmatic merge) |
 | Text | `ocr_image` | per-block OCR with bbox |
 | Image ops | `annotate_image` / `crop_image` / `zoom_region` | annotate / crop / zoom |
 | Advanced | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | multi-image compare / joint reasoning / interactive graph reasoning / virtual-annotation reasoning |
@@ -114,6 +114,7 @@ Key env vars: `VISION_TIMEOUT_S`(120) / `VISION_MAX_IMAGE_MB`(20) / `VISION_SAMP
 - **Latency**: MiMo reasoning model 15-25s per call; local Qwen3-VL 3-10s; `cv_locate` pure-local milliseconds
 - **`scan_anomalies` angle estimates unstable** (10°-35°), value is multi-candidate + per-candidate verification; physical check still required
 - **`cursor_locate` underperforms on local small models**; keep for strong cloud models
+- **`ui_refine` VLM review: suggest strong cloud models** (local 8B thinking models can take minutes on long JSON output); programmatic merge/dedup has no such limit
 - **`cv_locate` limited generalization**: only simple targets with clear color/template features; template matching degrades on solid (texture-free) targets (ZNCC property)
 - **Platform**: the 8 screen-control tools are Windows-only (ctypes + ImageGrab); on macOS/Linux only capture/info work
 - **SSRF guard**: URL images block private/link-local/metadata addresses by default (loopback allowed), `VISION_ALLOW_PRIVATE_NET=1` to allow; URL images limited to 50MP decompressed (local files support 200MP PCB)

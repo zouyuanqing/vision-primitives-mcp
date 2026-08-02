@@ -89,9 +89,41 @@ def log(*args):
     if DEBUG:
         print("[vision-bridge]", *args, file=sys.stderr, flush=True)
 
+def _is_private_ip(ip):
+    """SSRF 防护：判断 IP 是否属于应拦截的私网/链路本地/保留段（回环放行）。"""
+    try:
+        import ipaddress
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if addr.is_loopback or addr.is_unspecified:
+        return False  # 回环/未指定允许（本地 LM Studio / 本地服务常见）
+    return addr.is_private or addr.is_link_local or addr.is_reserved or addr.is_multicast
+
+
+def _check_image_url_safety(url):
+    """URL 图片 SSRF 检查：拦截私网/链路本地/元数据地址，VISION_ALLOW_PRIVATE_NET=1 可放行。"""
+    if _env("VISION_ALLOW_PRIVATE_NET", "0") == "1":
+        return
+    host = urllib.parse.urlparse(url).hostname
+    if not host:
+        return
+    try:
+        import socket as _socket
+        infos = _socket.getaddrinfo(host, None)
+    except Exception:
+        return  # 解析失败放行，由 urlopen 报错
+    for info in infos:
+        ip = info[4][0]
+        if _is_private_ip(ip):
+            raise VisionError(f"拒绝访问内网/保留地址: {host} ({ip})（设 VISION_ALLOW_PRIVATE_NET=1 可放行）")
+
+
 def load_image(src):
     """返回 (PIL.Image(RGB), 原始字节, 来源标签)。支持本地路径或 http(s) URL。"""
-    if src.startswith(("http://", "https://")):
+    is_url = src.startswith(("http://", "https://"))
+    if is_url:
+        _check_image_url_safety(src)
         req = urllib.request.Request(src, headers={"User-Agent": "vision-primitives-mcp/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -100,6 +132,16 @@ def load_image(src):
             raise VisionError(f"无法下载图片: {e.reason}")
         if len(data) > MAX_IMAGE_BYTES:
             raise VisionError(f"图片超过大小限制（{MAX_IMAGE_BYTES // (1024*1024)}MB）")
+        # URL 来源：解压后尺寸限制（防解压炸弹）；本地文件保留超大图（200MP PCB）支持
+        try:
+            probe = Image.open(io.BytesIO(data))
+            pw, ph = probe.size
+            if pw * ph > 50_000_000:
+                raise VisionError(f"URL 图片解压后过大（{pw}x{ph}，>50MP），本地文件不受此限")
+        except VisionError:
+            raise
+        except Exception:
+            pass
         label = src
     else:
         p = Path(src).expanduser()
@@ -625,6 +667,86 @@ def _connected_components(mask):
     return comps
 
 
+
+
+def _template_match_np(gray, tpl):
+    """numpy 归一化互相关模板匹配：积分图求窗口均值/方差 + FFT 相关求分子。
+
+    复杂度 O(N log N)（FFT），替代朴素四重循环 O(W·H·w·h)。无 numpy 时回退朴素实现。
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return _template_match_py(gray, tpl)
+    g = np.asarray(gray, dtype=np.float64)
+    t = np.asarray(tpl, dtype=np.float64)
+    gh, gw = g.shape
+    th, tw = t.shape
+    if th > gh or tw > gw:
+        return 0.0, (0, 0)
+    # 积分图（含平方）
+    I = np.zeros((gh + 1, gw + 1))
+    I2 = np.zeros((gh + 1, gw + 1))
+    I[1:, 1:] = np.cumsum(np.cumsum(g, axis=0), axis=1)
+    I2[1:, 1:] = np.cumsum(np.cumsum(g * g, axis=0), axis=1)
+    # FFT 相关：corr[i,j] = sum(g[i:i+th, j:j+tw] * t)
+    from numpy.fft import fft2, ifft2
+    fsize = (gh + th - 1, gw + tw - 1)
+    fg = fft2(g, s=fsize)
+    ft = fft2(t[::-1, ::-1], s=fsize)
+    corr = np.real(ifft2(fg * ft))
+    corr = corr[th - 1:gh, tw - 1:gw]  # (gh-th+1, gw-tw+1)
+    n = th * tw
+    tmean = float(t.mean())
+    tvar = float(t.var()) + 1e-9
+    win_sum = I[th:, tw:] - I[:-th, tw:] - I[th:, :-tw] + I[:-th, :-tw]
+    win_sumsq = I2[th:, tw:] - I2[:-th, tw:] - I2[th:, :-tw] + I2[:-th, :-tw]
+    win_mean = win_sum / n
+    win_var = np.maximum(win_sumsq / n - win_mean * win_mean, 1e-9)
+    num = corr - n * win_mean * tmean
+    denom = np.sqrt(win_var * tvar) * n
+    scores = num / np.maximum(denom, 1e-9)
+    best = int(np.argmax(scores))
+    by, bx = divmod(best, scores.shape[1])
+    return float(scores[by, bx]), (bx, by)
+
+
+def _template_match_py(gray, tpl):
+    """朴素四重循环模板匹配（numpy 不可用时的回退，仅建议小图）。"""
+    gw, gh = gray.size
+    tw, th = tpl.size
+    gpx, tpx = gray.load(), tpl.load()
+    tsum = tsum2 = 0
+    for y in range(th):
+        for x in range(tw):
+            v = tpx[x, y]
+            tsum += v
+            tsum2 += v * v
+    tmean = tsum / (tw * th)
+    tvar = max(1e-6, tsum2 / (tw * th) - tmean * tmean)
+    best_score, best_xy = -1.0, (0, 0)
+    for oy in range(gh - th + 1):
+        for ox in range(gw - tw + 1):
+            s = s2 = 0
+            for y in range(th):
+                for x in range(tw):
+                    v = gpx[ox + x, oy + y]
+                    s += v
+                    s2 += v * v
+            n = tw * th
+            mean = s / n
+            var = max(1e-6, s2 / n - mean * mean)
+            num = 0.0
+            for y in range(th):
+                for x in range(tw):
+                    num += (gpx[ox + x, oy + y] - mean) * (tpx[x, y] - tmean)
+            denom = (var * tvar) ** 0.5
+            score_v = num / (denom * n) if denom > 0 else 0.0
+            if score_v > best_score:
+                best_score, best_xy = score_v, (ox, oy)
+    return best_score, best_xy
+
+
 def tool_cv_locate(args):
     """传统 CV 精定位（备选方案，v1.10）：颜色分割 + 连通域质心（像素级，零依赖）或模板匹配。
 
@@ -662,42 +784,13 @@ def tool_cv_locate(args):
             method = "color-cc"
     if template and box is None:
         tpl_img, _, _ = load_image(template)
-        # 归一化模板匹配（朴素实现，仅适用于小模板/局部图）
         gray = img.convert("L")
         tpl = tpl_img.convert("L")
         gw, gh = gray.size
         tw, th = tpl.size
         if tw > gw or th > gh:
             raise VisionError(f"模板 {tw}x{th} 大于图像 {gw}x{gh}，请先裁切局部图")
-        gpx, tpx = gray.load(), tpl.load()
-        tsum = tsum2 = 0
-        for y in range(th):
-            for x in range(tw):
-                v = tpx[x, y]
-                tsum += v
-                tsum2 += v * v
-        tmean = tsum / (tw * th)
-        tvar = max(1e-6, tsum2 / (tw * th) - tmean * tmean)
-        best_score, best_xy = -1.0, (0, 0)
-        for oy in range(gh - th + 1):
-            for ox in range(gw - tw + 1):
-                s = s2 = 0
-                for y in range(th):
-                    for x in range(tw):
-                        v = gpx[ox + x, oy + y]
-                        s += v
-                        s2 += v * v
-                n = tw * th
-                mean = s / n
-                var = max(1e-6, s2 / n - mean * mean)
-                num = 0.0
-                for y in range(th):
-                    for x in range(tw):
-                        num += (gpx[ox + x, oy + y] - mean) * (tpx[x, y] - tmean)
-                denom = (var * tvar) ** 0.5
-                score_v = num / (denom * n) if denom > 0 else 0.0
-                if score_v > best_score:
-                    best_score, best_xy = score_v, (ox, oy)
+        best_score, best_xy = _template_match_np(gray, tpl)
         if best_score > 0.5:
             box = [best_xy[0], best_xy[1], best_xy[0] + tw - 1, best_xy[1] + th - 1]
             center = [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2]
@@ -721,6 +814,359 @@ def tool_cv_locate(args):
         "target": target, "count": 1, "primitives": [point], "method": method,
         "image_size": [img.width, img.height], "coords": coords,
     }
+
+
+# ----------------------------- UI 结构化解析（v1.11）：文本锚定 + 类型检测器 -----------------------------
+
+UI_ACTION_VERBS = ("点击", "按下", "输入", "选择", "打开", "关闭", "切换", "滚动", "拖拽", "勾选", "取消勾选", "双击", "右键", "悬停", "聚焦", "清除", "提交", "确认", "取消", "click", "press", "type", "enter", "select", "open", "close", "switch", "scroll", "drag", "check", "submit", "confirm")
+
+
+
+# ---- YOLO 可选检测器（OmniParser icon_detect，无 ultralytics/模型时自动回退纯 CV）----
+_YOLO_MODEL = None
+_YOLO_LOADED = False
+
+
+def _yolo_model():
+    global _YOLO_MODEL, _YOLO_LOADED
+    if _YOLO_LOADED:
+        return _YOLO_MODEL
+    _YOLO_LOADED = True
+    try:
+        path = _env("VISION_YOLO_MODEL", "") or str(Path(__file__).resolve().parent / "models" / "icon_detect.pt")
+        if not os.path.exists(path):
+            log("YOLO 模型不存在，纯 CV 模式:", path)
+            _YOLO_MODEL = None
+            return None
+        from ultralytics import YOLO
+        _YOLO_MODEL = YOLO(path)
+        log("YOLO loaded:", path)
+    except Exception as e:
+        log("YOLO 不可用（纯 CV 模式）:", str(e)[:120])
+        _YOLO_MODEL = None
+    return _YOLO_MODEL
+
+
+def _yolo_detect(img, conf=0.3):
+    """返回 [(box, conf, cls), ...]，失败返回 []。"""
+    m = _yolo_model()
+    if m is None:
+        return []
+    try:
+        res = m.predict(img, conf=conf, verbose=False)
+        out = []
+        for b in res[0].boxes:
+            xyxy = [int(v) for v in b.xyxy[0].tolist()]
+            out.append((xyxy, float(b.conf[0]), int(b.cls[0])))
+        return out
+    except Exception as e:
+        log("YOLO 推理失败:", str(e)[:120])
+        return []
+
+
+def _iou(a, b):
+    """两个 box 的 IoU。"""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / max(1, ua)
+
+
+def _render_overlay(img, elements, out_path):
+    """渲染检测结果叠加层（半透明框 + 编号），保存并返回路径。"""
+    marked = img.copy()
+    draw = ImageDraw.Draw(marked, "RGBA")
+    fnt = _font(max(14, min(img.width, img.height) // 40))
+    for e in elements:
+        b = e.get("box")
+        if not b:
+            continue
+        draw.rectangle(b, outline=(255, 60, 60, 220), width=2, fill=(255, 60, 60, 26))
+        label = str(e.get("id", ""))
+        draw.rectangle([b[0], b[1] - 18, b[0] + 22, b[1] + 2], fill=(200, 30, 30, 230))
+        draw.text((b[0] + 3, b[1] - 16), label, fill=(255, 255, 255), font=fnt)
+    out = _resolve_out_path(out_path)
+    if out is None:
+        out = _unique_path("ui_overlay")
+    marked.save(out, "PNG")
+    return str(out)
+
+def _edge_sobel(img):
+    """Sobel 边缘强度图（PIL Kernel，零依赖）。返回 L 灰度图。"""
+    from PIL import ImageFilter
+    g = img.convert("L")
+    gx = g.filter(ImageFilter.Kernel((3, 3), [-1, 0, 1, -2, 0, 2, -1, 0, 1], scale=1, offset=128))
+    gy = g.filter(ImageFilter.Kernel((3, 3), [-1, -2, -1, 0, 0, 0, 1, 2, 1], scale=1, offset=128))
+    out = Image.new("L", g.size, 0)
+    px_gx, px_gy, px_out = gx.load(), gy.load(), out.load()
+    w, h = g.size
+    for y in range(h):
+        for x in range(w):
+            v = abs(px_gx[x, y] - 128) + abs(px_gy[x, y] - 128)
+            px_out[x, y] = min(255, v * 3)
+    return out
+
+
+def _morph_close(gray, size):
+    """形态学闭合（先膨胀后腐蚀），合并邻近边缘成块。"""
+    from PIL import ImageFilter
+    return gray.filter(ImageFilter.MaxFilter(size)).filter(ImageFilter.MinFilter(size))
+
+
+def _extract_ui_keywords(target):
+    """从目标描述提取锚定关键词：引号内容优先，否则去动作动词取最长片段。"""
+    import re as _re
+    target = (target or "").strip()
+    pairs = _re.findall(r"「([^」]{1,40})」|“([^”]{1,40})”|\"([^\"]{1,40})\"|'([^']{1,40})'", target)
+    quoted = [g for tup in pairs for g in tup if g]
+    if quoted:
+        return [q.strip() for q in quoted if q.strip()]
+    # 前缀/后缀动词剥离（避免误伤"搜索框"等名词）
+    t = target
+    changed = True
+    while changed:
+        changed = False
+        for v in sorted(UI_ACTION_VERBS, key=len, reverse=True):
+            if t.startswith(v):
+                t = t[len(v):].strip()
+                changed = True
+            elif t.endswith(v):
+                t = t[:-len(v)].strip()
+                changed = True
+    parts = [p.strip() for p in _re.split(r"[的于在向把以从到和与或]+", t) if p.strip()]
+    return parts or [target]
+
+
+def _contained(box, outer):
+    """box 是否整体在 outer 内（含少量容差）。"""
+    return outer[0] <= box[0] and outer[1] <= box[1] and outer[2] >= box[2] and outer[3] >= box[3]
+
+
+def tool_ui_parse(args):
+    """全屏 UI 结构化解析（OmniParser-lite，零训练纯 CV + OCR）。
+
+    输出元素列表：[{id, type, text, box, score}]，type ∈ text/button/input/icon/other。
+    文本锚定依赖 OCR（一次 API 调用）；矩形控件/图标检测为纯本地 CV。
+    """
+    img, raw, label = load_image(args["image"])
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    out_path = args.get("out_path")
+
+    key = cache_key(raw, "ui_parse", coords, str(out_path or ""))
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: ui_parse")
+        return hit
+
+    elements = []
+    used_ids = set()
+
+    # ---- 1) 文本块（OCR，像素级 bbox）----
+    text_boxes = []
+    try:
+        ocr = tool_ocr_image({"image": args["image"], "coords": "pixel"})
+        for it in ocr.get("items", []):
+            tb = it.get("box_pixel")
+            if not tb:
+                continue
+            text_boxes.append((it.get("text") or "", tb))
+    except Exception as e:
+        log("ui_parse OCR 失败，降级为纯 CV:", str(e)[:120])
+        text_boxes = []
+
+    for t, tb in text_boxes:
+        elements.append({"id": len(elements) + 1, "type": "text", "text": t, "box": tb, "score": 1.0})
+        used_ids.add(len(elements))
+
+    # ---- 2) 矩形控件检测（边缘 + 形态学闭合 + 矩形度过滤，纯本地）----
+    edge = _edge_sobel(img)
+    closed = _morph_close(edge, max(5, min(img.width, img.height) // 80))
+    # 阈值二值化
+    from PIL import ImageOps
+    closed = closed.point(lambda v: 255 if v > 40 else 0)
+    comps = _connected_components(closed)
+    w, h = img.size
+    for area, bbox, cent in comps:
+        bw = bbox[2] - bbox[0]
+        bh = bbox[3] - bbox[1]
+        if bw < 24 or bh < 16 or bw > w * 0.92 or bh > h * 0.92:
+            continue
+        rect_ratio = area / max(1, bw * bh)
+        # 边框带覆盖度：bbox 边缘 4px 带内的白色像素占比（检测描边矩形，步进 2 采样）
+        band = 4
+        mask_px = closed.load()
+        total_w = 0
+        band_w = 0
+        for yy in range(bbox[1], bbox[3] + 1, 2):
+            for xx in range(bbox[0], bbox[2] + 1, 2):
+                if mask_px[xx, yy] == 255:
+                    total_w += 1
+                    if xx - bbox[0] < band or bbox[2] - xx < band or yy - bbox[1] < band or bbox[3] - yy < band:
+                        band_w += 1
+        band_ratio = band_w / max(1, total_w)
+        is_border_rect = band_ratio > 0.7 and total_w > 0
+        # 矩形控件：实心矩形（闭合填充）或描边矩形（边框带）
+        if (rect_ratio > 0.55 or is_border_rect) and 0.12 <= bw / bh <= 12:
+            # 内部是否有文本（按钮/输入框判定）
+            inner_text = ""
+            for t, tb in text_boxes:
+                if _contained(tb, bbox):
+                    inner_text = t
+                    break
+            ctype = "button" if inner_text else "input"
+            # 排除与已有元素重叠度过高的
+            dup = False
+            for e in elements:
+                eb = e["box"]
+                inter_w = max(0, min(bbox[2], eb[2]) - max(bbox[0], eb[0]))
+                inter_h = max(0, min(bbox[3], eb[3]) - max(bbox[1], eb[1]))
+                if inter_w * inter_h > 0.5 * bw * bh:
+                    dup = True
+                    break
+            if dup:
+                continue
+            elements.append({"id": len(elements) + 1, "type": ctype, "text": inner_text, "box": bbox, "score": round(rect_ratio, 2)})
+            used_ids.add(len(elements))
+
+    # ---- 3) 图标候选：中面积连通域、不在文本框内、矩形度低 ----
+    for area, bbox, cent in comps:
+        bw = bbox[2] - bbox[0]
+        bh = bbox[3] - bbox[1]
+        if bw < 10 or bh < 10 or bw > 90 or bh > 90:
+            continue
+        in_text = any(_contained(bbox, tb) or _contained(tb, bbox) for _, tb in text_boxes)
+        if in_text:
+            continue
+        rect_ratio = area / max(1, bw * bh)
+        if rect_ratio < 0.85:
+            elements.append({"id": len(elements) + 1, "type": "icon", "text": "", "box": bbox, "score": round(1 - rect_ratio, 2)})
+            used_ids.add(len(elements))
+
+    # ---- 4) YOLO 可选检测器（OmniParser icon_detect）：可交互区域，像素级 ----
+    yolo_boxes = _yolo_detect(img)
+    for yb, yconf, ycls in yolo_boxes:
+        if yb[2] - yb[0] < 12 or yb[3] - yb[1] < 12:
+            continue
+        dup = False
+        for e in elements:
+            if _iou(yb, e["box"]) > 0.5:
+                dup = True
+                break
+        if dup:
+            continue
+        elements.append({"id": 0, "type": "icon", "text": "", "box": yb, "score": round(yconf, 2), "detector": "yolo"})
+        used_ids.add(0)
+
+    # 排序：先 text 后控件，按位置（y 优先）
+    order = {"text": 0, "button": 1, "input": 2, "icon": 3}
+    elements.sort(key=lambda e: (order.get(e["type"], 9), e["box"][1], e["box"][0]))
+    for i, e in enumerate(elements):
+        e["id"] = i + 1
+        if coords == "norm":
+            e["box"] = to_norm(e["box"], img.width, img.height)
+
+    if out_path:
+        overlay_path = _render_overlay(img, elements, out_path)
+    result = {
+        "count": len(elements),
+        "elements": elements,
+        "image_size": [img.width, img.height],
+        "coords": coords,
+        "note": "文本锚定依赖 OCR API；控件/图标为纯本地 CV 检测" if text_boxes else "OCR 不可用，仅纯 CV 结果",
+    }
+    if out_path:
+        result["overlay_image"] = overlay_path
+    cache_set(key, result)
+    return result
+
+
+def tool_ui_locate(args):
+    """UI 元素定位（文本锚定优先）：目标描述 → 关键词提取 → OCR 文本匹配 → 控件框。
+
+    流程：ui_parse 解析 → 文本锚定（按钮/输入框上的文字）→ 类型过滤 → 输出匹配元素与候选列表。
+    返回 matched 为主结果（像素级），candidates 供上层 VLM 二次确认（SoM 编号选择）。
+    """
+    img, raw, label = load_image(args["image"])
+    target = str(args.get("target") or "").strip()
+    if not target:
+        raise VisionError("缺少参数: target")
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    type_hint = str(args.get("type") or "").lower()
+    if type_hint and type_hint not in ("text", "button", "input", "icon"):
+        raise VisionError("type 必须是 text/button/input/icon 之一")
+
+    key = cache_key(raw, "ui_locate", target, coords, type_hint)
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: ui_locate")
+        return hit
+
+    parsed = tool_ui_parse({"image": args["image"], "coords": "pixel"})
+    elements = parsed.get("elements", [])
+    keywords = _extract_ui_keywords(target)
+
+    matched = None
+    candidates = []
+    # 文本锚定：关键词与 OCR 文本匹配
+    for e in elements:
+        et = (e.get("text") or "").strip()
+        if not et:
+            continue
+        score = 0.0
+        for kw in keywords:
+            if kw and (kw in et or et in kw):
+                score = max(score, len(kw) / max(1, len(et)))
+        if score > 0:
+            e2 = dict(e)
+            e2["match_score"] = round(score, 2)
+            candidates.append(e2)
+
+    candidates.sort(key=lambda c: -c.get("match_score", 0))
+    # 类型过滤
+    if type_hint and candidates:
+        typed = [c for c in candidates if c["type"] == type_hint]
+        if typed:
+            candidates = typed
+    if candidates:
+        matched = candidates[0]
+
+    # 无文本锚定时：类型候选（button/input/icon 全量按位置）
+    if matched is None:
+        for e in elements:
+            if type_hint and e["type"] != type_hint:
+                continue
+            if e["type"] in ("button", "input", "icon"):
+                candidates.append(dict(e))
+        if candidates:
+            matched = candidates[0]
+
+    if coords == "norm":
+        for c in candidates:
+            c["box"] = to_norm(c["box"], img.width, img.height)
+        if matched:
+            matched["box"] = to_norm(matched["box"], img.width, img.height)
+
+    result = {
+        "target": target,
+        "count": len(candidates),
+        "matched": matched,
+        "candidates": candidates[:8],
+        "keywords": keywords,
+        "image_size": [img.width, img.height],
+        "coords": coords,
+    }
+    if matched is None:
+        result["note"] = "未找到匹配元素：可尝试换目标描述（带引号文字）、指定 type，或用 som_locate/locate_object 兜底"
+    cache_set(key, result)
+    return result
 
 
 # ----------------------------- SoM: Set-of-Mark 编号定位（v1.10） -----------------------------
@@ -2382,6 +2828,8 @@ HANDLERS = {
     "som_locate": tool_som_locate,
     "cursor_locate": tool_cursor_locate,
     "cv_locate": tool_cv_locate,
+    "ui_parse": tool_ui_parse,
+    "ui_locate": tool_ui_locate,
     "ocr_image": tool_ocr_image,
     "annotate_image": tool_annotate_image,
     "crop_image": tool_crop_image,
@@ -2656,6 +3104,33 @@ TOOLS = [
         },
     },
     {
+        "name": "ui_parse",
+        "description": "全屏 UI 结构化解析：OCR 文本块 + 矩形控件检测（button/input）+ 图标候选 + 可选 YOLO 检测器（OmniParser icon_detect，models/icon_detect.pt 存在时自动启用），输出带 id 的结构化元素列表。out_path 保存半透明叠加层渲染图（编号框），可直接交 VLM 做编号选择。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
+                "out_path": {"type": "string", "description": "保存叠加层渲染图（半透明框+编号，必须位于输出目录内）"},
+            },
+            "required": ["image"],
+        },
+    },
+    {
+        "name": "ui_locate",
+        "description": "UI 元素定位（文本锚定优先）：目标描述 → 关键词 → OCR 文本匹配 → 控件框（像素级）。按钮/输入框/图标等 UI 点击类目标的备选精定位；返回 matched + 候选列表供 VLM 确认。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "target": {"type": "string", "description": "目标描述，如：点击「登录」按钮 / 搜索框输入 hello / 右上角图标"},
+                "type": {"type": "string", "enum": ["text", "button", "input", "icon"], "description": "目标类型过滤，可选"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
+            },
+            "required": ["image", "target"],
+        },
+    },
+    {
         "name": "compare_infer",
         "description": "多图联合推理（2-4 张）：每张图可带独立标注（items_per_image），联合对比/推理关系（差异、因果、时序、整体结论）。",
         "inputSchema": {
@@ -2790,7 +3265,7 @@ def handle_message(msg):
             "result": {
                 "protocolVersion": req_pv,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.10.0"},
+                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.11.0"},
             },
         }
     if method == "notifications/initialized":

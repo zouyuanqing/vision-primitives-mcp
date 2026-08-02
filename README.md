@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 24 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，仅依赖 Pillow。
+让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 26 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）。
 
 ```
 纯文本模型（推理与决策）
@@ -52,7 +52,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 `cv_locate`（颜色分割 + 连通域质心）：纯本地、零 API 调用、实测 0-4px。**仅适用简单目标**（纯色 UI 点击元素、几何图形、固定模板），泛化有限，通用目标请用 VLM 定位。
 
-## 工具一览（24 个）
+## 工具一览（26 个）
 
 | 分类 | 工具 | 作用 |
 |---|---|---|
@@ -61,6 +61,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 | | `som_locate` | **SoM 编号网格递归定位**（`final`: box/number/cv 三模式） |
 | | `cursor_locate` | 移动光标 + 视觉反馈循环定位（GUI-Cursor 范式） |
 | | `cv_locate` | **CV 备选**：颜色分割/模板匹配，像素级，仅简单目标 |
+| `ui_parse` / `ui_locate` | **UI 结构化解析 / 文本锚定定位**：OCR 文本块 + 控件检测 + 可选 YOLO，输出带编号元素列表 |
 | 文字 | `ocr_image` | 逐文本块 OCR，带 bbox |
 | 图像处理 | `annotate_image` / `crop_image` / `zoom_region` | 标注 / 裁切 / 放大 |
 | 高级推理 | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | 多图对比 / 联合推理 / 交互式图形推理 / 虚拟标注推理 |
@@ -78,6 +79,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 | `som_locate` | 编号引用 + 递归裁切，对抗分辨率稀释 | **通用推荐**（`final="box"` 末轮局部图直接输出框） |
 | `cursor_locate` | 相对偏移 + 视觉反馈逼近 | 需要交互式收敛时（建议云端强模型） |
 | `cv_locate` | 颜色分割 / 模板匹配，纯本地 | 简单目标备选：纯色 UI、几何、固定模板 |
+| `ui_parse` / `ui_locate` | **结构化解析 + 文本锚定**（OCR 文本匹配控件框）；可选 YOLO 检测器（OmniParser icon_detect） | **UI 点击类首选**：检测框像素级（实测红圆 4px 内），VLM 只做编号语义选择 |
 
 **VLM 选型建议**：定位场景优先 grounding 训练的模型（业界证据：GUI-Actor / SE-GUI / GUI-Cursor 均指出文本坐标生成的"空间-语义对齐弱"问题）：
 
@@ -87,6 +89,8 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 - 云端 MiMo V2.5：通用描述/OCR 优秀，定位需配合 `som_locate`
 
 ## 快速上手
+
+**UI 检测器（可选）**：下载 [OmniParser icon_detect](https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.pt)（39.7MB，MIT）放入 `models/icon_detect.pt`，`ui_parse` 自动启用 YOLO 像素级元素检测（需 `pip install ultralytics`）。
 
 ```toml
 # ~/.codex/config.toml
@@ -110,7 +114,9 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 - **延迟**：MiMo 推理型模型单次 15-25s；本地 Qwen3-VL 单次 3-10s；`cv_locate` 纯本地毫秒级
 - **`scan_anomalies` 角度估计不稳定**（10°-35° 波动），价值在多候选 + 逐点验证，最终需实物核对
 - **`cursor_locate` 在本地小模型上表现一般**（相对偏移估计有限），建议云端强模型
-- **`cv_locate` 泛化有限**：仅颜色/模板特征明显的简单目标
+- **`cv_locate` 泛化有限**：仅颜色/模板特征明显的简单目标；模板匹配对纯色（零纹理）目标退化（ZNCC 数学特性）
+- **平台**：屏幕控制 8 工具为 Windows-only（ctypes + ImageGrab），macOS/Linux 下仅截屏/信息可用
+- **SSRF 防护**：URL 图片默认拦截私网/链路本地/元数据地址（回环放行），`VISION_ALLOW_PRIVATE_NET=1` 放行；URL 来源图片解压后限 50MP（本地文件支持 200MP PCB）
 
 ## 版本历史（精简）
 
@@ -127,7 +133,7 @@ python test\run_tests.py   # 142 项 mock 测试，不依赖真实 key
 python test\e2e_mimo.py    # 真实端到端（需要 VISION_API_KEY）
 ```
 
-- 输入图片只读，上传仅发往配置的后端；`out_path` 强制限定输出目录
+- 输入图片只读，上传仅发往配置的后端；`out_path` 强制限定输出目录；URL 图片有 SSRF 与解压炸弹防护
 - API key 仅存本地配置；屏幕控制类工具默认拒绝（`VISION_ALLOW_SCREEN_CONTROL=1` 才启用）
 
 **仓库**：[github.com/zouyuanqing/vision-primitives-mcp](https://github.com/zouyuanqing/vision-primitives-mcp)

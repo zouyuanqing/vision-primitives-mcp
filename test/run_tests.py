@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 24 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 26 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -795,6 +795,61 @@ def test_som_final_cv(api_base):
     check("som cv final_mode", r["final_mode"] == "cv", str(r))
 
 
+
+
+def test_extract_ui_keywords():
+    import vision_primitives_mcp as vb
+    k1 = vb._extract_ui_keywords('点击「登录」按钮')
+    check("kw quoted", k1 == ["登录"], str(k1))
+    k2 = vb._extract_ui_keywords("点击登录按钮")
+    check("kw deverb", any("登录" in k for k in k2), str(k2))
+    k3 = vb._extract_ui_keywords("在搜索框输入 hello")
+    check("kw mixed", any(("搜索框" in k) or ("hello" in k) for k in k3), str(k3))
+
+
+def test_ui_parse_rect_detection():
+    import vision_primitives_mcp as vb
+    img = make_img(400, 300, (245, 246, 250))
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(img)
+    d.rectangle([50, 60, 250, 120], outline=(60, 60, 60), width=2)
+    d.rectangle([60, 140, 340, 220], outline=(60, 60, 60), width=2)
+    p = tmp_png("ui_rect.png", img)
+    r = vb.tool_ui_parse({"image": p, "coords": "pixel"})
+    types = [e["type"] for e in r.get("elements", [])]
+    check("ui_parse has button/input", "button" in types or "input" in types, str(types))
+    check("ui_parse count>0", r.get("count", 0) > 0, str(r)[:200])
+
+
+def test_ui_locate_text_anchor():
+    import vision_primitives_mcp as vb
+    reset_mock()
+    MockVisionHandler.responses.append(json.dumps([{"text": "登录", "box": [100, 80, 200, 110]}]))
+    img = make_img(400, 300, (245, 246, 250))
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(img)
+    d.rectangle([60, 60, 280, 120], outline=(60, 60, 60), width=2)
+    d.text((100, 82), "登录", fill=(0, 0, 0))
+    p = tmp_png("ui_login.png", img)
+    r = vb.tool_ui_locate({"image": p, "target": '点击「登录」按钮', "coords": "pixel"})
+    m = r.get("matched")
+    check("ui_locate matched", m is not None, str(r)[:300])
+    if m:
+        check("ui_locate matched text", "登录" in (m.get("text") or ""), str(m))
+        b = m["box"]
+        check("ui_locate box near text", abs(b[0] - 60) < 80 and abs(b[1] - 60) < 60, str(b))
+
+
+def test_ui_locate_no_match(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    MockVisionHandler.responses.append(json.dumps([{"text": "注册", "box": [100, 80, 200, 110]}]))
+    img = make_img(300, 200, (245, 246, 250))
+    p = tmp_png("ui_nomatch.png", img)
+    r = vb.tool_ui_locate({"image": p, "target": '点击「登录」按钮', "coords": "pixel"})
+    check("ui_locate no match", r.get("matched") is None, str(r)[:200])
+
+
 def test_health(api_base):
     import vision_primitives_mcp as vb
     res = vb.tool_vision_health()
@@ -866,6 +921,11 @@ def main():
     test_cv_locate_no_match(api_base)
     test_cv_locate_requires_hint(api_base)
     test_som_final_cv(api_base)
+    print("== UI 结构化解析 (v1.11) ==")
+    test_extract_ui_keywords()
+    test_ui_parse_rect_detection()
+    test_ui_locate_text_anchor()
+    test_ui_locate_no_match(api_base)
     print("== health ==")
     test_health(api_base)
     srv.shutdown()

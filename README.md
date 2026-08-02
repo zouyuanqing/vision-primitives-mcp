@@ -1,4 +1,6 @@
-# Vision Primitives MCP v3 — 交互式视觉原语 MCP 插件
+# Vision Primitives MCP — 给纯文本 LLM 装上眼睛的视觉原语 MCP 服务器
+
+[简体中文](./README.md) | [English](./README.en.md)
 
 让纯文本模型（如 `deepseek-v4-flash`）通过 MCP 工具获得完整"看图 + 操作图片"能力：
 **看图 → 定位（输出坐标）→ 圈画标注 → 裁切/放大 → OCR 提取** 的多步交互闭环，处理后的图片可直接交还展示。
@@ -157,7 +159,7 @@ python test\e2e_mimo.py
 vision-bridge-mcp/
 ├── vision_bridge_mcp.py   # MCP server（单文件实现）
 ├── sample.png             # 测试样例图
-├── README.md
+├── README.md / README.en.md   # 中英双语说明
 ├── .env.example
 ├── generated/             # 工具生成的图片（e2e 产物）
 ├── .cache/                # 结果缓存（自动创建）

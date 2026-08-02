@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 21 tools", names == ["describe_image", "analyze_image", "locate_object", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 23 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -642,6 +642,59 @@ def test_parse_verdict():
     v3 = vb._parse_verdict("存在明显歪斜元件，旋转约15度，丝印 A1142C，元件类型 LDO稳压器")
     check("verdict positive", v3["verdict"] == "skewed" and v3["rotation"] == 15.0 and v3["silkscreen"] == "A1142C", str(v3))
 
+def test_som_locate(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 第一轮选 5 号格（3x3 网格中心），第二轮选 1 号格
+    MockVisionHandler.responses.append("5")
+    MockVisionHandler.responses.append("1")
+    img = make_img(300, 300, (240, 240, 240))
+    p = tmp_png("som.png", img)
+    res = vb.tool_som_locate({"image": p, "target": "红色圆形", "grid": [3, 3], "rounds": 2})
+    check("som count", res["count"] == 1, str(res))
+    check("som path numbers", res["path_numbers"] == [5, 1], str(res))
+    b = res["primitives"][0]["box_pixel"]
+    check("som box in orig bounds", 0 <= b[0] < b[2] <= 300 and 0 <= b[1] < b[3] <= 300, str(b))
+
+
+def test_som_locate_bad_number(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    MockVisionHandler.responses.append("99")  # 越界编号
+    img = make_img(200, 200, (240, 240, 240))
+    p = tmp_png("som_bad.png", img)
+    res = vb.tool_som_locate({"image": p, "target": "目标", "grid": [2, 2], "rounds": 1})
+    check("som bad number -> count 0", res["count"] == 0, str(res))
+
+
+def test_cursor_locate(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 第一步：向右下移动 30,20；第二步 done
+    MockVisionHandler.responses.append(json.dumps({"dx": 30, "dy": 20}))
+    MockVisionHandler.responses.append(json.dumps({"done": True}))
+    img = make_img(400, 300, (240, 240, 240))
+    p = tmp_png("cursor.png", img)
+    res = vb.tool_cursor_locate({"image": p, "target": "红色圆形", "start": [0.5, 0.5], "max_steps": 4})
+    check("cursor count", res["count"] == 1, str(res))
+    check("cursor final pos", res["cursor"]["final"] == [230, 170], str(res["cursor"]))
+    check("cursor done", res["cursor"]["done"] is True, str(res["cursor"]))
+    check("cursor steps", res["cursor"]["steps_used"] == 2, str(res["cursor"]))
+
+
+def test_cursor_clamp(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 一步移动超出边界 -> 步长钳制
+    MockVisionHandler.responses.append(json.dumps({"dx": 9999, "dy": -9999}))
+    MockVisionHandler.responses.append(json.dumps({"done": True}))
+    img = make_img(100, 100, (240, 240, 240))
+    p = tmp_png("cursor_clamp.png", img)
+    res = vb.tool_cursor_locate({"image": p, "target": "x", "step_ratio": 0.2, "max_steps": 3})
+    # 起始 (50,50)，step_ratio 0.2 -> max_dx=20 -> (70,30)
+    check("cursor clamp", res["cursor"]["final"] == [70, 30], str(res["cursor"]))
+
+
 def test_health(api_base):
     import vision_primitives_mcp as vb
     res = vb.tool_vision_health()
@@ -699,6 +752,12 @@ def main():
     test_compare_images(api_base)
     print("== verdict 解析 ==")
     test_parse_verdict()
+    print("== SoM 编号定位 (v1.10) ==")
+    test_som_locate(api_base)
+    test_som_locate_bad_number(api_base)
+    print("== Cursor 循环定位 (v1.10) ==")
+    test_cursor_locate(api_base)
+    test_cursor_clamp(api_base)
     print("== health ==")
     test_health(api_base)
     srv.shutdown()

@@ -551,6 +551,272 @@ def tool_locate_object(args):
     cache_set(key, result)
     return result
 
+# ----------------------------- SoM: Set-of-Mark 编号定位（v1.10） -----------------------------
+
+SOM_PROMPT = (
+    "图中每个候选区域都叠加了编号标记（红色色块 + 白色数字）。\n"
+    "目标：「{target}」\n"
+    "目标的主体（或其中心）位于哪个编号区域？只回答该编号的数字，不要输出任何其他内容。"
+)
+
+CURSOR_PROMPT = (
+    "图中红色圆环 + 十字标记是当前光标位置，光标中心像素坐标 ({cx}, {cy})。\n"
+    "目标：「{target}」\n"
+    "请估计【目标中心】相对【光标中心】的偏移，只输出一个 JSON 对象：\n"
+    '{{"dx": 水平偏移像素数（目标在光标右侧为正）, "dy": 垂直偏移像素数（目标在光标下方为正）}}\n'
+    '如果光标已经对准目标中心（或本回合不应再移动），输出 {{"done": true}}'
+)
+
+
+def _render_som_grid(img, cols, rows):
+    """在图上叠加编号网格标记，返回 (标记图, 格子列表[(x1,y1,x2,y2),...] 行优先)。"""
+    marked = img.copy()
+    draw = ImageDraw.Draw(marked, "RGBA")
+    fnt = _font(max(22, min(img.width, img.height) // 12))
+    w, h = img.size
+    cw, ch = w / cols, h / rows
+    cells = []
+    for r in range(rows):
+        for c in range(cols):
+            x1, y1 = int(c * cw), int(r * ch)
+            x2, y2 = int((c + 1) * cw), int((r + 1) * ch)
+            cells.append((x1, y1, x2, y2))
+            n = len(cells)
+            draw.rectangle([x1, y1, x2, y2], fill=(255, 50, 50, 42), outline=(255, 40, 40, 210), width=2)
+            label = str(n)
+            bbox = draw.textbbox((0, 0), label, font=fnt)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            pad = 5
+            bx1, by1 = x1 + 5, y1 + 5
+            draw.rectangle([bx1, by1, bx1 + tw + pad * 2, by1 + th + pad * 2], fill=(230, 30, 30, 235))
+            draw.text((bx1 + pad, by1 + pad - 2), label, fill=(255, 255, 255), font=fnt)
+    return marked, cells
+
+
+def _parse_som_number(text, max_n):
+    """从模型回复中提取编号（1..max_n），失败返回 None。"""
+    if not text:
+        return None
+    m = re.search(r"(\d{1,3})", text)
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if 1 <= n <= max_n else None
+
+
+def tool_som_locate(args):
+    """Set-of-Mark 编号递归定位：把'输出坐标'变成'选编号'，对无 grounding 训练的通用 VLM 更友好。
+
+    每轮把图像划分为编号网格并叠加标记，模型只回答目标所在编号；
+    随后裁切该区域（2x 放大）进入下一轮，逐轮把定位收敛到更小区域。
+    """
+    img, raw, label = load_image(args["image"])
+    target = str(args.get("target") or "").strip()
+    if not target:
+        raise VisionError("缺少参数: target")
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    grid = args.get("grid") or [3, 3]
+    if not isinstance(grid, (list, tuple)) or len(grid) != 2:
+        grid = [3, 3]
+    cols, rows = int(grid[0]), int(grid[1])
+    if not (1 <= cols <= 12 and 1 <= rows <= 12):
+        raise VisionError("grid 每维范围 1-12")
+    rounds = int(args.get("rounds") or 2)
+    if not (1 <= rounds <= 5):
+        raise VisionError("rounds 范围 1-5")
+    expand = float(args.get("expand") or 0.15)
+    if not (0 <= expand <= 0.5):
+        raise VisionError("expand 范围 0-0.5")
+    out_path = _resolve_out_path(args.get("out_path"))
+
+    key = cache_key(raw, "som_locate", target, coords, f"g{cols}x{rows}r{rounds}e{expand}")
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: som_locate")
+        return hit
+
+    # 工作图坐标系链：(work_img, origin_in_orig, scale) — origin 为 work 左上角原图坐标，scale 为 work 像素->原图像素比例
+    work, origin, scale = img, [0, 0], 1.0
+    path_numbers = []
+    selected_in_orig = None
+    saved = False
+    for rnd in range(rounds):
+        marked, cells = _render_som_grid(work, cols, rows)
+        prompt = SOM_PROMPT.format(target=target)
+        text = call_chat([
+            {"role": "system", "content": AUX_VISION_SYSTEM},
+            image_message(prompt, marked),
+        ])
+        n = _parse_som_number(text, len(cells))
+        if n is None:
+            log("som round", rnd + 1, "编号解析失败:", text[:120])
+            break
+        path_numbers.append(n)
+        x1, y1, x2, y2 = cells[n - 1]
+        # 选中格换算回原图
+        sel_in_orig = [
+            int(origin[0] + x1 / scale), int(origin[1] + y1 / scale),
+            int(origin[0] + x2 / scale), int(origin[1] + y2 / scale),
+        ]
+        selected_in_orig = sel_in_orig
+        if out_path and not saved:
+            marked.save(out_path, "PNG")
+            saved = True
+        if rnd == rounds - 1:
+            break
+        # 外扩裁切 + 2x 放大进入下一轮
+        ww, wh = work.size
+        padx = int((x2 - x1) * expand)
+        pady = int((y2 - y1) * expand)
+        cb = (max(0, x1 - padx), max(0, y1 - pady), min(ww, x2 + padx), min(wh, y2 + pady))
+        crop = work.crop(cb)
+        crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+        work = crop
+        origin = [origin[0] + cb[0] / scale, origin[1] + cb[1] / scale]
+        scale = scale * (crop.width / (cb[2] - cb[0]))
+
+    box, _ = _clamp_list(selected_in_orig or [0, 0, 0, 0], img.width, img.height)
+    center = [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2]
+    point = {
+        "id": "som", "label": target, "type": "box", "confidence": None, "rotation": 0,
+        "box_pixel": box, "box_norm": to_norm(box, img.width, img.height),
+        "point_pixel": center, "point_norm": [center[0] * 1000 // img.width, center[1] * 1000 // img.height],
+    }
+    result = {
+        "target": target,
+        "count": 1 if selected_in_orig else 0,
+        "primitives": [point] if selected_in_orig else [],
+        "method": "som",
+        "grid": [cols, rows],
+        "rounds_done": len(path_numbers),
+        "path_numbers": path_numbers,
+        "image_size": [img.width, img.height],
+        "coords": coords,
+    }
+    if out_path and saved:
+        result["mark_image"] = str(out_path)
+    if not selected_in_orig:
+        result["note"] = "编号解析失败或模型未返回有效编号，可尝试调大 grid 或检查目标描述"
+    cache_set(key, result)
+    return result
+
+
+# ----------------------------- Cursor: 移动光标 + 视觉反馈循环定位（v1.10） -----------------------------
+
+def _render_cursor(img, cx, cy):
+    """在图上渲染红色光标（圆环 + 十字线）。"""
+    marked = img.copy()
+    draw = ImageDraw.Draw(marked)
+    r = max(12, min(img.width, img.height) // 22)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 25, 25), width=3)
+    draw.line([cx - r - 8, cy, cx + r + 8, cy], fill=(255, 25, 25), width=2)
+    draw.line([cx, cy - r - 8, cx, cy + r + 8], fill=(255, 25, 25), width=2)
+    return marked
+
+
+def _parse_num(v):
+    """容错数字解析：int/float/字符串（含 px 尾巴）。"""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = re.search(r"-?\d+(?:\.\d+)?", str(v))
+    return float(m.group(0)) if m else 0.0
+
+
+def tool_cursor_locate(args):
+    """移动光标 + 视觉反馈循环定位：模型输出相对偏移（而非绝对坐标），光标渲染提供反馈逐步逼近。
+
+    相比一次性输出坐标，模型对'目标相对光标的偏移'更易估计；每轮渲染光标位置，
+    视觉反馈帮助模型对齐预测与屏幕位置（参考 GUI-Cursor 交互式搜索范式）。
+    """
+    img, raw, label = load_image(args["image"])
+    target = str(args.get("target") or "").strip()
+    if not target:
+        raise VisionError("缺少参数: target")
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    max_steps = int(args.get("max_steps") or 6)
+    if not (1 <= max_steps <= 20):
+        raise VisionError("max_steps 范围 1-20")
+    step_ratio = float(args.get("step_ratio") or 0.25)
+    if not (0.05 <= step_ratio <= 0.6):
+        raise VisionError("step_ratio 范围 0.05-0.6")
+    start = args.get("start") or [0.5, 0.5]
+    out_path = _resolve_out_path(args.get("out_path"))
+
+    w, h = img.size
+    try:
+        sx, sy = float(start[0]), float(start[1])
+        cx, cy = int(sx * w), int(sy * h)
+    except (TypeError, ValueError, IndexError):
+        cx, cy = w // 2, h // 2
+    cx, cy = max(0, min(w - 1, cx)), max(0, min(h - 1, cy))
+
+    max_dx, max_dy = step_ratio * w, step_ratio * h
+    track = []
+    final_img = None
+    done = False
+    for step in range(max_steps):
+        marked = _render_cursor(img, cx, cy)
+        final_img = marked
+        prompt = CURSOR_PROMPT.format(target=target, cx=cx, cy=cy)
+        text = call_chat([
+            {"role": "system", "content": AUX_VISION_SYSTEM},
+            image_message(prompt, marked),
+        ])
+        obj = extract_json(text)
+        if not isinstance(obj, dict):
+            track.append({"step": step + 1, "cx": cx, "cy": cy, "note": "响应无法解析为 JSON"})
+            break
+        if obj.get("done") in (True, "true", 1, "1"):
+            track.append({"step": step + 1, "cx": cx, "cy": cy, "done": True})
+            done = True
+            break
+        dx = _parse_num(obj.get("dx"))
+        dy = _parse_num(obj.get("dy"))
+        if abs(dx) > max_dx:
+            dx = max_dx if dx > 0 else -max_dx
+        if abs(dy) > max_dy:
+            dy = max_dy if dy > 0 else -max_dy
+        ncx = max(0, min(w - 1, int(round(cx + dx))))
+        ncy = max(0, min(h - 1, int(round(cy + dy))))
+        moved = abs(ncx - cx) + abs(ncy - cy)
+        track.append({"step": step + 1, "cx": cx, "cy": cy, "dx": int(dx), "dy": int(dy), "to": [ncx, ncy]})
+        cx, cy = ncx, ncy
+        if moved < 3:
+            track.append({"step": step + 2, "cx": cx, "cy": cy, "converged": True})
+            done = True
+            break
+
+    if out_path and final_img is not None:
+        final_img.save(out_path, "PNG")
+
+    center = [cx, cy]
+    half = max(8, min(w, h) // 60)
+    box, _ = _clamp_list([cx - half, cy - half, cx + half, cy + half], w, h)
+    point = {
+        "id": "cursor", "label": target, "type": "point", "confidence": None, "rotation": 0,
+        "point_pixel": center, "point_norm": [center[0] * 1000 // w, center[1] * 1000 // h],
+        "box_pixel": box, "box_norm": to_norm(box, w, h),
+    }
+    result = {
+        "target": target,
+        "count": 1,
+        "primitives": [point],
+        "method": "cursor",
+        "cursor": {"final": center, "steps_used": len(track), "done": done, "track": track},
+        "image_size": [w, h],
+        "coords": coords,
+    }
+    if out_path:
+        result["cursor_image"] = str(out_path)
+    return result
+
+
 def tool_ocr_image(args):
     img, raw, label = load_image(args["image"])
     language = str(args.get("language") or "auto")
@@ -1878,6 +2144,8 @@ HANDLERS = {
     "describe_image": tool_describe_image,
     "analyze_image": tool_analyze_image,
     "locate_object": tool_locate_object,
+    "som_locate": tool_som_locate,
+    "cursor_locate": tool_cursor_locate,
     "ocr_image": tool_ocr_image,
     "annotate_image": tool_annotate_image,
     "crop_image": tool_crop_image,
@@ -1935,6 +2203,40 @@ TOOLS = [
                 "target": {"type": "string", "description": "要定位的目标，如：蓝色提交按钮 / 红色圆形 / 报错文字"},
                 "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认，像素）或 norm（0-1000 归一化）"},
                 "refine": {"type": "boolean", "description": "两阶段精修：粗定位后裁切放大二次定位（更准，代价是每个候选多一次视觉调用），默认 false"},
+            },
+            "required": ["image", "target"],
+        },
+    },
+    {
+        "name": "som_locate",
+        "description": "Set-of-Mark 编号网格递归定位：给图叠加编号标记，模型只回答目标所在编号（不输出坐标），逐轮裁切放大收敛。对无 grounding 训练的通用 VLM（MiMo 等）比直接输出坐标更准。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "target": {"type": "string", "description": "要定位的目标，如：蓝色提交按钮 / 红色圆形 / 报错文字"},
+                "grid": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "网格划分 [列数, 行数]，默认 [3,3]，范围 1-12"},
+                "rounds": {"type": "integer", "description": "递归轮数（每轮一次视觉调用），默认 2，范围 1-5"},
+                "expand": {"type": "number", "description": "每轮裁切边缘外扩比例，默认 0.15，范围 0-0.5"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
+                "out_path": {"type": "string", "description": "保存带编号标记的图（必须位于输出目录内）"},
+            },
+            "required": ["image", "target"],
+        },
+    },
+    {
+        "name": "cursor_locate",
+        "description": "移动光标 + 视觉反馈循环定位：渲染光标位置，模型输出目标相对光标的偏移（dx/dy），逐步逼近目标中心。对相对偏移的估计比绝对坐标更准（参考 GUI-Cursor 交互式搜索范式）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "target": {"type": "string", "description": "要定位的目标，如：蓝色提交按钮 / 红色圆形 / 报错文字"},
+                "max_steps": {"type": "integer", "description": "最大移动轮数，默认 6，范围 1-20"},
+                "step_ratio": {"type": "number", "description": "单轮最大移动比例（相对图宽高），默认 0.25，范围 0.05-0.6"},
+                "start": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "光标初始位置（归一化 0-1 比例），默认 [0.5, 0.5] 即图中心"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
+                "out_path": {"type": "string", "description": "保存最终光标位置的图（必须位于输出目录内）"},
             },
             "required": ["image", "target"],
         },
@@ -2233,7 +2535,7 @@ def handle_message(msg):
             "result": {
                 "protocolVersion": req_pv,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.9.1"},
+                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.10.0"},
             },
         }
     if method == "notifications/initialized":

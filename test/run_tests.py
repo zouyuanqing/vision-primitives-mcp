@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 23 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 24 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -645,16 +645,61 @@ def test_parse_verdict():
 def test_som_locate(api_base):
     import vision_primitives_mcp as vb
     reset_mock()
-    # 第一轮选 5 号格（3x3 网格中心），第二轮选 1 号格
+    # 全部轮次选编号（final=number，旧行为）
     MockVisionHandler.responses.append("5")
     MockVisionHandler.responses.append("1")
     img = make_img(300, 300, (240, 240, 240))
     p = tmp_png("som.png", img)
-    res = vb.tool_som_locate({"image": p, "target": "红色圆形", "grid": [3, 3], "rounds": 2})
+    res = vb.tool_som_locate({"image": p, "target": "红色圆形", "grid": [3, 3], "rounds": 2, "final": "number"})
     check("som count", res["count"] == 1, str(res))
     check("som path numbers", res["path_numbers"] == [5, 1], str(res))
     b = res["primitives"][0]["box_pixel"]
     check("som box in orig bounds", 0 <= b[0] < b[2] <= 300 and 0 <= b[1] < b[3] <= 300, str(b))
+
+
+def test_som_locate_final_box(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 第一轮选 5 号格；末轮 box：局部图(260x260)上定位框 [50,50,150,150]
+    MockVisionHandler.responses.append("5")
+    MockVisionHandler.responses.append(json.dumps({"visual_primitives": [{"label": "x", "type": "box", "box": [50, 50, 150, 150]}]}))
+    img = make_img(300, 300, (240, 240, 240))
+    p = tmp_png("som_box.png", img)
+    res = vb.tool_som_locate({"image": p, "target": "红色圆形", "grid": [3, 3], "rounds": 2, "final": "box"})
+    check("som box mode count", res["count"] == 1, str(res))
+    check("som box mode final", res["final_mode"] == "box", str(res))
+    # 5 号格 [100,100,200,200] expand 0.15 -> cb(85,85,215,215) 130px -> 2x 260px
+    # box [50,50,150,150] / scale 2 + origin(85,85) -> [110,110,160,160]
+    b = res["primitives"][0]["box_pixel"]
+    check("som box mapped to orig", b == [110, 110, 160, 160], str(b))
+    check("som box path numbers", res["path_numbers"] == [5], str(res))
+
+
+def test_som_locate_final_box_round1(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # rounds=1 时末轮即第一轮：直接在原图输出框
+    MockVisionHandler.responses.append(json.dumps({"visual_primitives": [{"label": "x", "type": "box", "box": [10, 20, 90, 80]}]}))
+    img = make_img(200, 100, (240, 240, 240))
+    p = tmp_png("som_box1.png", img)
+    res = vb.tool_som_locate({"image": p, "target": "目标", "rounds": 1, "final": "box"})
+    check("som box r1 count", res["count"] == 1, str(res))
+    b = res["primitives"][0]["box_pixel"]
+    check("som box r1 identity", b == [10, 20, 90, 80], str(b))
+
+
+def test_som_locate_final_box_fallback(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 末轮 box 解析失败 -> 回退选编号
+    MockVisionHandler.responses.append("5")
+    MockVisionHandler.responses.append("非JSON内容")
+    img = make_img(300, 300, (200, 205, 210))  # 不同内容避免命中前序测试缓存
+    p = tmp_png("som_fb.png", img)
+    res = vb.tool_som_locate({"image": p, "target": "红色圆形", "grid": [3, 3], "rounds": 2, "final": "box"})
+    check("som fallback count", res["count"] == 1, str(res))
+    check("som fallback keeps round1", res["path_numbers"] == [5], str(res))
+    check("som fallback note", "回退" in (res.get("note") or ""), str(res.get("note")))
 
 
 def test_som_locate_bad_number(api_base):
@@ -663,7 +708,7 @@ def test_som_locate_bad_number(api_base):
     MockVisionHandler.responses.append("99")  # 越界编号
     img = make_img(200, 200, (240, 240, 240))
     p = tmp_png("som_bad.png", img)
-    res = vb.tool_som_locate({"image": p, "target": "目标", "grid": [2, 2], "rounds": 1})
+    res = vb.tool_som_locate({"image": p, "target": "目标", "grid": [2, 2], "rounds": 1, "final": "number"})
     check("som bad number -> count 0", res["count"] == 0, str(res))
 
 
@@ -693,6 +738,61 @@ def test_cursor_clamp(api_base):
     res = vb.tool_cursor_locate({"image": p, "target": "x", "step_ratio": 0.2, "max_steps": 3})
     # 起始 (50,50)，step_ratio 0.2 -> max_dx=20 -> (70,30)
     check("cursor clamp", res["cursor"]["final"] == [70, 30], str(res["cursor"]))
+
+
+
+
+def test_cv_locate_color(api_base):
+    import vision_primitives_mcp as vb
+    # 纯本地：不依赖 mock API，确定性测试
+    img = make_img(300, 300, (240, 240, 240))
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(img)
+    d.ellipse([100, 100, 200, 200], fill=(220, 50, 50))
+    p = tmp_png("cv_red.png", img)
+    r = vb.tool_cv_locate({"image": p, "target": "红色圆形", "color": "red", "coords": "pixel"})
+    check("cv color count", r["count"] == 1, str(r))
+    c = r["primitives"][0]["point_pixel"]
+    check("cv color centroid", c == [150, 150], str(c))
+    check("cv method", r["method"] == "color-cc", str(r))
+
+
+def test_cv_locate_no_match(api_base):
+    import vision_primitives_mcp as vb
+    img = make_img(200, 200, (240, 240, 240))  # 无任何颜色目标
+    p = tmp_png("cv_none.png", img)
+    r = vb.tool_cv_locate({"image": p, "target": "x", "color": "red", "coords": "pixel"})
+    check("cv no match count 0", r["count"] == 0, str(r))
+
+
+def test_cv_locate_requires_hint(api_base):
+    import vision_primitives_mcp as vb
+    img = make_img(100, 100, (240, 240, 240))
+    p = tmp_png("cv_hint.png", img)
+    try:
+        vb.tool_cv_locate({"image": p, "target": "x", "coords": "pixel"})
+        check("cv requires color/template", False, "应抛出 VisionError")
+    except vb.VisionError as e:
+        check("cv requires color/template", "color" in str(e), str(e))
+
+
+def test_som_final_cv(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 第一轮选 5 号格（中心），末轮 cv 颜色分割（本地，不消耗 mock 响应）
+    MockVisionHandler.responses.append("5")
+    img = make_img(300, 300, (240, 240, 240))
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(img)
+    d.ellipse([120, 120, 180, 180], fill=(220, 50, 50))  # 红圆在中心格
+    p = tmp_png("som_cv.png", img)
+    r = vb.tool_som_locate({"image": p, "target": "红色圆形", "grid": [3, 3], "rounds": 2, "final": "cv", "color": "red"})
+    check("som cv count", r["count"] == 1, str(r))
+    b = r["primitives"][0]["box_pixel"]
+    # 红圆中心 (150,150)，cv 质心应接近
+    c = [(b[0] + b[2]) // 2, (b[1] + b[3]) // 2]
+    check("som cv centroid", abs(c[0] - 150) <= 2 and abs(c[1] - 150) <= 2, str(c))
+    check("som cv final_mode", r["final_mode"] == "cv", str(r))
 
 
 def test_health(api_base):
@@ -754,10 +854,18 @@ def main():
     test_parse_verdict()
     print("== SoM 编号定位 (v1.10) ==")
     test_som_locate(api_base)
+    test_som_locate_final_box(api_base)
+    test_som_locate_final_box_round1(api_base)
+    test_som_locate_final_box_fallback(api_base)
     test_som_locate_bad_number(api_base)
     print("== Cursor 循环定位 (v1.10) ==")
     test_cursor_locate(api_base)
     test_cursor_clamp(api_base)
+    print("== CV 精定位备选方案 (v1.10) ==")
+    test_cv_locate_color(api_base)
+    test_cv_locate_no_match(api_base)
+    test_cv_locate_requires_hint(api_base)
+    test_som_final_cv(api_base)
     print("== health ==")
     test_health(api_base)
     srv.shutdown()

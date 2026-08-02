@@ -551,6 +551,178 @@ def tool_locate_object(args):
     cache_set(key, result)
     return result
 
+# ----------------------------- CV 精定位（备选方案）：颜色分割 / 模板匹配（v1.10） -----------------------------
+
+_COLOR_TABLE = {
+    "red": ((170, 0, 0), (255, 90, 90)),
+    "green": ((0, 130, 0), (110, 235, 120)),
+    "blue": ((0, 40, 160), (110, 150, 255)),
+    "yellow": ((200, 160, 0), (255, 240, 120)),
+    "orange": ((230, 120, 0), (255, 200, 100)),
+    "purple": ((120, 0, 150), (210, 90, 230)),
+    "cyan": ((0, 150, 150), (120, 235, 235)),
+    "white": ((225, 225, 225), (255, 255, 255)),
+    "black": ((0, 0, 0), (70, 70, 70)),
+    "gray": ((110, 110, 110), (180, 180, 180)),
+}
+
+
+def _color_mask(img, color):
+    """颜色阈值掩码。color 支持: 内置名 / [r,g,b] / [r1,g1,b1,r2,g2,b2]。返回 L 模式 0/255 掩码。"""
+    if isinstance(color, (list, tuple)) and len(color) >= 3:
+        if len(color) == 3:
+            lo = (max(0, color[0] - 45), max(0, color[1] - 45), max(0, color[2] - 45))
+            hi = (min(255, color[0] + 45), min(255, color[1] + 45), min(255, color[2] + 45))
+        else:
+            lo, hi = tuple(color[:3]), tuple(color[3:6])
+    else:
+        key = str(color).lower()
+        if key not in _COLOR_TABLE:
+            raise VisionError(f"未知颜色: {color}（支持: {', '.join(_COLOR_TABLE)} 或 [r,g,b]）")
+        lo, hi = _COLOR_TABLE[key]
+    mask = Image.new("L", img.size, 0)
+    px_src, px_mask = img.load(), mask.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b = px_src[x, y][:3]
+            if lo[0] <= r <= hi[0] and lo[1] <= g <= hi[1] and lo[2] <= b <= hi[2]:
+                px_mask[x, y] = 255
+    return mask
+
+
+def _connected_components(mask):
+    """BFS 连通域。返回按面积降序的 [(area, bbox, centroid), ...]（bbox=[x1,y1,x2,y2] 像素，centroid=[cx,cy]）。"""
+    w, h = mask.size
+    visited = bytearray(w * h)
+    px = mask.load()
+    comps = []
+    for sy in range(h):
+        for sx in range(w):
+            if px[sx, sy] != 255 or visited[sy * w + sx]:
+                continue
+            stack = [(sx, sy)]
+            visited[sy * w + sx] = 1
+            area = 0
+            sx1, sy1, sx2, sy2 = sx, sy, sx, sy
+            sum_x = sum_y = 0
+            while stack:
+                cx, cy = stack.pop()
+                area += 1
+                sum_x += cx
+                sum_y += cy
+                if cx < sx1: sx1 = cx
+                if cx > sx2: sx2 = cx
+                if cy < sy1: sy1 = cy
+                if cy > sy2: sy2 = cy
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < w and 0 <= ny < h and not visited[ny * w + nx] and px[nx, ny] == 255:
+                        visited[ny * w + nx] = 1
+                        stack.append((nx, ny))
+            comps.append((area, [sx1, sy1, sx2, sy2], [sum_x // area, sum_y // area]))
+    comps.sort(key=lambda c: -c[0])
+    return comps
+
+
+def tool_cv_locate(args):
+    """传统 CV 精定位（备选方案，v1.10）：颜色分割 + 连通域质心（像素级，零依赖）或模板匹配。
+
+    适用场景：简单目标——纯色 UI 元素（点击类）、几何图形、固定模板元件。
+    VLM 负责语义粗定位后，本工具在局部图上给出几何精确坐标（实测 0-4px），
+    不依赖视觉 token 粒度，速度快（纯本地，无 API 调用）。
+
+    泛化边界（已知）：颜色模式要求目标有明显颜色特征；模板模式需要模板图，
+    且对旋转/缩放/遮挡敏感。通用目标请用 VLM 定位（locate_object / som_locate）。
+    """
+    img, raw, label = load_image(args["image"])
+    target = str(args.get("target") or "").strip()
+    if not target:
+        raise VisionError("缺少参数: target")
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    color = args.get("color")
+    template = args.get("template")
+    if not color and not template:
+        raise VisionError("需要 color（颜色名或 [r,g,b]）或 template（模板图路径）至少其一")
+    min_area = int(args.get("min_area") or 0)
+
+    method = None
+    box = center = score = None
+
+    if color:
+        mask = _color_mask(img, color)
+        comps = _connected_components(mask)
+        if comps:
+            area, bbox, cent = comps[0]
+            if min_area and area < min_area:
+                raise VisionError(f"最大色块面积 {area} < min_area {min_area}")
+            box, center, score = bbox, cent, area
+            method = "color-cc"
+    if template and box is None:
+        tpl_img, _, _ = load_image(template)
+        # 归一化模板匹配（朴素实现，仅适用于小模板/局部图）
+        gray = img.convert("L")
+        tpl = tpl_img.convert("L")
+        gw, gh = gray.size
+        tw, th = tpl.size
+        if tw > gw or th > gh:
+            raise VisionError(f"模板 {tw}x{th} 大于图像 {gw}x{gh}，请先裁切局部图")
+        gpx, tpx = gray.load(), tpl.load()
+        tsum = tsum2 = 0
+        for y in range(th):
+            for x in range(tw):
+                v = tpx[x, y]
+                tsum += v
+                tsum2 += v * v
+        tmean = tsum / (tw * th)
+        tvar = max(1e-6, tsum2 / (tw * th) - tmean * tmean)
+        best_score, best_xy = -1.0, (0, 0)
+        for oy in range(gh - th + 1):
+            for ox in range(gw - tw + 1):
+                s = s2 = 0
+                for y in range(th):
+                    for x in range(tw):
+                        v = gpx[ox + x, oy + y]
+                        s += v
+                        s2 += v * v
+                n = tw * th
+                mean = s / n
+                var = max(1e-6, s2 / n - mean * mean)
+                num = 0.0
+                for y in range(th):
+                    for x in range(tw):
+                        num += (gpx[ox + x, oy + y] - mean) * (tpx[x, y] - tmean)
+                denom = (var * tvar) ** 0.5
+                score_v = num / (denom * n) if denom > 0 else 0.0
+                if score_v > best_score:
+                    best_score, best_xy = score_v, (ox, oy)
+        if best_score > 0.5:
+            box = [best_xy[0], best_xy[1], best_xy[0] + tw - 1, best_xy[1] + th - 1]
+            center = [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2]
+            score = best_score
+            method = "template"
+
+    if box is None:
+        return {
+            "target": target, "count": 0, "primitives": [], "method": method,
+            "image_size": [img.width, img.height], "coords": coords,
+            "note": "未找到目标：颜色分割无有效色块且模板匹配无命中（score<=0.5）",
+        }
+
+    point = {
+        "id": "cv", "label": target, "type": "box", "confidence": score, "rotation": 0,
+        "box_pixel": box, "box_norm": to_norm(box, img.width, img.height),
+        "point_pixel": center, "point_norm": [center[0] * 1000 // img.width, center[1] * 1000 // img.height],
+        "method": method,
+    }
+    return {
+        "target": target, "count": 1, "primitives": [point], "method": method,
+        "image_size": [img.width, img.height], "coords": coords,
+    }
+
+
 # ----------------------------- SoM: Set-of-Mark 编号定位（v1.10） -----------------------------
 
 SOM_PROMPT = (
@@ -609,6 +781,8 @@ def tool_som_locate(args):
 
     每轮把图像划分为编号网格并叠加标记，模型只回答目标所在编号；
     随后裁切该区域（2x 放大）进入下一轮，逐轮把定位收敛到更小区域。
+    final="box"（默认）时末轮在收敛后的局部图上直接输出坐标框：
+    局部图分辨率充足，直接定位精度远高于整图（消融实测：裁切后定位可达 0-3px）。
     """
     img, raw, label = load_image(args["image"])
     target = str(args.get("target") or "").strip()
@@ -629,9 +803,15 @@ def tool_som_locate(args):
     expand = float(args.get("expand") or 0.15)
     if not (0 <= expand <= 0.5):
         raise VisionError("expand 范围 0-0.5")
+    final_mode = str(args.get("final") or "box").lower()
+    if final_mode not in ("box", "number", "cv"):
+        raise VisionError("final 必须是 'box'（末轮输出坐标框）/ 'number'（全部选编号）/ 'cv'（末轮颜色分割精定位，备选方案，需 color）")
+    color = args.get("color")
+    if final_mode == "cv" and not color:
+        raise VisionError("final='cv' 需要 color 参数（颜色名或 [r,g,b]）")
     out_path = _resolve_out_path(args.get("out_path"))
 
-    key = cache_key(raw, "som_locate", target, coords, f"g{cols}x{rows}r{rounds}e{expand}")
+    key = cache_key(raw, "som_locate", target, coords, f"g{cols}x{rows}r{rounds}e{expand}f{final_mode}{color or ''}")
     hit = cache_get(key)
     if hit is not None:
         log("cache hit: som_locate")
@@ -641,41 +821,93 @@ def tool_som_locate(args):
     work, origin, scale = img, [0, 0], 1.0
     path_numbers = []
     selected_in_orig = None
+    box_failed = False
     saved = False
     for rnd in range(rounds):
-        marked, cells = _render_som_grid(work, cols, rows)
-        prompt = SOM_PROMPT.format(target=target)
-        text = call_chat([
-            {"role": "system", "content": AUX_VISION_SYSTEM},
-            image_message(prompt, marked),
-        ])
-        n = _parse_som_number(text, len(cells))
-        if n is None:
-            log("som round", rnd + 1, "编号解析失败:", text[:120])
+        box_done = False
+        if final_mode == "box" and rnd == rounds - 1:
+            # 末轮：在收敛后的局部图上直接输出坐标框（局部图分辨率充足，比选格子更精确）
+            ptext = f"在图像（宽 {work.width}px，高 {work.height}px）中定位目标：{target}\n" + PRIMITIVE_PROMPT
+            try:
+                btext = call_chat([
+                    {"role": "system", "content": AUX_VISION_SYSTEM},
+                    image_message(ptext, work),
+                ])
+                bobj = extract_json(btext)
+            except VisionError:
+                bobj = None
+            prims = normalize_primitives(bobj.get("visual_primitives"), work.width, work.height, "generic") if isinstance(bobj, dict) else []
+            if prims and prims[0].get("box_pixel"):
+                lb = prims[0]["box_pixel"]
+                sel_in_orig = [
+                    int(origin[0] + lb[0] / scale), int(origin[1] + lb[1] / scale),
+                    int(origin[0] + lb[2] / scale), int(origin[1] + lb[3] / scale),
+                ]
+                selected_in_orig = sel_in_orig
+                box_done = True
+            else:
+                box_failed = True
+                log("som final box 解析失败，回退选编号:", btext[:120])
+        if final_mode == "cv" and rnd == rounds - 1 and color:
+            # 末轮：CV 精定位（备选方案，颜色分割 + 连通域质心），像素级且纯本地
+            tmp_dir = CACHE_DIR / "scan_tmp"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tp = tmp_dir / f"som_cv_{os.getpid()}_{rnd}.png"
+            work.save(tp, "PNG")
+            try:
+                cvr = tool_cv_locate({"image": str(tp), "target": target, "color": color, "coords": "pixel"})
+            finally:
+                try:
+                    tp.unlink()
+                except OSError:
+                    pass
+            if cvr.get("primitives"):
+                lb = cvr["primitives"][0]["box_pixel"]
+                sel_in_orig = [
+                    int(origin[0] + lb[0] / scale), int(origin[1] + lb[1] / scale),
+                    int(origin[0] + lb[2] / scale), int(origin[1] + lb[3] / scale),
+                ]
+                selected_in_orig = sel_in_orig
+                cv_method = cvr.get("method")
+                box_done = True
+            else:
+                log("som final cv 未找到色块，回退选编号")
+        if not box_done:
+            marked, cells = _render_som_grid(work, cols, rows)
+            prompt = SOM_PROMPT.format(target=target)
+            text = call_chat([
+                {"role": "system", "content": AUX_VISION_SYSTEM},
+                image_message(prompt, marked),
+            ])
+            n = _parse_som_number(text, len(cells))
+            if n is None:
+                log("som round", rnd + 1, "编号解析失败:", text[:120])
+                break
+            path_numbers.append(n)
+            x1, y1, x2, y2 = cells[n - 1]
+            # 选中格换算回原图
+            sel_in_orig = [
+                int(origin[0] + x1 / scale), int(origin[1] + y1 / scale),
+                int(origin[0] + x2 / scale), int(origin[1] + y2 / scale),
+            ]
+            selected_in_orig = sel_in_orig
+            if out_path and not saved:
+                marked.save(out_path, "PNG")
+                saved = True
+            if rnd == rounds - 1:
+                break
+            # 外扩裁切 + 2x 放大进入下一轮
+            ww, wh = work.size
+            padx = int((x2 - x1) * expand)
+            pady = int((y2 - y1) * expand)
+            cb = (max(0, x1 - padx), max(0, y1 - pady), min(ww, x2 + padx), min(wh, y2 + pady))
+            crop = work.crop(cb)
+            crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+            work = crop
+            origin = [origin[0] + cb[0] / scale, origin[1] + cb[1] / scale]
+            scale = scale * (crop.width / (cb[2] - cb[0]))
+        else:
             break
-        path_numbers.append(n)
-        x1, y1, x2, y2 = cells[n - 1]
-        # 选中格换算回原图
-        sel_in_orig = [
-            int(origin[0] + x1 / scale), int(origin[1] + y1 / scale),
-            int(origin[0] + x2 / scale), int(origin[1] + y2 / scale),
-        ]
-        selected_in_orig = sel_in_orig
-        if out_path and not saved:
-            marked.save(out_path, "PNG")
-            saved = True
-        if rnd == rounds - 1:
-            break
-        # 外扩裁切 + 2x 放大进入下一轮
-        ww, wh = work.size
-        padx = int((x2 - x1) * expand)
-        pady = int((y2 - y1) * expand)
-        cb = (max(0, x1 - padx), max(0, y1 - pady), min(ww, x2 + padx), min(wh, y2 + pady))
-        crop = work.crop(cb)
-        crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
-        work = crop
-        origin = [origin[0] + cb[0] / scale, origin[1] + cb[1] / scale]
-        scale = scale * (crop.width / (cb[2] - cb[0]))
 
     box, _ = _clamp_list(selected_in_orig or [0, 0, 0, 0], img.width, img.height)
     center = [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2]
@@ -689,6 +921,7 @@ def tool_som_locate(args):
         "count": 1 if selected_in_orig else 0,
         "primitives": [point] if selected_in_orig else [],
         "method": "som",
+        "final_mode": final_mode,
         "grid": [cols, rows],
         "rounds_done": len(path_numbers),
         "path_numbers": path_numbers,
@@ -699,6 +932,8 @@ def tool_som_locate(args):
         result["mark_image"] = str(out_path)
     if not selected_in_orig:
         result["note"] = "编号解析失败或模型未返回有效编号，可尝试调大 grid 或检查目标描述"
+    elif box_failed:
+        result["note"] = "末轮坐标框解析失败，已回退为编号网格结果"
     cache_set(key, result)
     return result
 
@@ -2146,6 +2381,7 @@ HANDLERS = {
     "locate_object": tool_locate_object,
     "som_locate": tool_som_locate,
     "cursor_locate": tool_cursor_locate,
+    "cv_locate": tool_cv_locate,
     "ocr_image": tool_ocr_image,
     "annotate_image": tool_annotate_image,
     "crop_image": tool_crop_image,
@@ -2209,7 +2445,7 @@ TOOLS = [
     },
     {
         "name": "som_locate",
-        "description": "Set-of-Mark 编号网格递归定位：给图叠加编号标记，模型只回答目标所在编号（不输出坐标），逐轮裁切放大收敛。对无 grounding 训练的通用 VLM（MiMo 等）比直接输出坐标更准。",
+        "description": "Set-of-Mark 编号网格递归定位：叠加编号标记，模型回答目标所在编号，逐轮裁切放大收敛；final=box（默认）时末轮在局部图上直接输出坐标框，精度远高于整图直接定位。对无 grounding 训练的通用 VLM（MiMo 等）比直接输出坐标更准。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2218,8 +2454,11 @@ TOOLS = [
                 "grid": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "网格划分 [列数, 行数]，默认 [3,3]，范围 1-12"},
                 "rounds": {"type": "integer", "description": "递归轮数（每轮一次视觉调用），默认 2，范围 1-5"},
                 "expand": {"type": "number", "description": "每轮裁切边缘外扩比例，默认 0.15，范围 0-0.5"},
+                "final": {"type": "string", "enum": ["box", "number"], "description": "末轮策略：box（默认，局部图直接输出坐标框，更精确）或 number（全部轮次选编号）"},
                 "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
                 "out_path": {"type": "string", "description": "保存带编号标记的图（必须位于输出目录内）"},
+                "final": {"type": "string", "enum": ["box", "number", "cv"], "description": "末轮模式：box=局部图直接输出坐标框（默认）；number=全部选编号；cv=颜色分割精定位（备选，需 color，像素级）"},
+                "color": {"type": "string", "description": "final=cv 时的颜色提示（颜色名或 [r,g,b]），如 red/green"},
             },
             "required": ["image", "target"],
         },
@@ -2398,6 +2637,22 @@ TOOLS = [
             "type": "object",
             "properties": {"key": {"type": "string", "description": "单个按键或 ctrl+shift+key 组合"}},
             "required": ["key"],
+        },
+    },
+    {
+        "name": "cv_locate",
+        "description": "传统 CV 精定位（备选方案）：颜色分割 + 连通域质心（像素级，零依赖，实测 0-4px）或模板匹配。适用简单目标（纯色 UI 元素、几何图形、固定模板）；泛化有限，通用目标请用 locate_object / som_locate。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "target": {"type": "string", "description": "目标描述"},
+                "color": {"type": "string", "description": "颜色名(red/green/blue/yellow/orange/purple/cyan/white/black/gray) 或 [r,g,b] 或 [r1,g1,b1,r2,g2,b2]，与 template 至少其一"},
+                "template": {"type": "string", "description": "模板图路径（模板匹配模式），与 color 至少其一；建议在 VLM 粗定位后的局部图上使用"},
+                "min_area": {"type": "integer", "description": "最小色块面积过滤，默认 0"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
+            },
+            "required": ["image", "target"],
         },
     },
     {

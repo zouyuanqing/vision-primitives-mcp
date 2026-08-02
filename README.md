@@ -11,7 +11,7 @@
 - 协议：手写 MCP stdio（JSON-RPC 2.0 + Content-Length 帧），兼容 Codex 桌面端/CLI
 - 灵感来源：HanaAgent 的 Vision Bridge（辅助视觉模型 + 结构化"视觉原语"）+ DeepSeek《Thinking with Visual Primitives》（坐标框/点 + 标签）
 
-## 工具一览（23 个）
+## 工具一览（24 个）
 
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
@@ -20,6 +20,7 @@
 | `locate_object` | 定位目标对象，返回坐标（让 LLM 输出坐标）；`refine=true` 两阶段精修 | `image`、`target` 必填；`coords`(pixel/norm)、`refine` |
 | `som_locate` | **SoM 编号网格递归定位**：叠加编号标记，模型只回答目标所在编号（不输出坐标），逐轮裁切放大收敛 | `image`、`target` 必填；`grid`、`rounds`、`expand` |
 | `cursor_locate` | **移动光标 + 视觉反馈循环定位**：渲染光标位置，模型输出目标相对偏移（dx/dy）逐步逼近（GUI-Cursor 范式） | `image`、`target` 必填；`max_steps`、`step_ratio`、`start` |
+| `cv_locate` | **CV 精定位（备选方案）**：颜色分割 + 连通域质心（像素级，实测 0-4px，零依赖）或模板匹配；适用纯色 UI 元素/几何图形/固定模板，泛化有限 | `image`、`target` 必填；`color`/`template` 至少其一；`min_area` |
 | `ocr_image` | 逐文本块 OCR，带 bbox（像素+归一化） | `image` 必填；`language` |
 | `annotate_image` | 在图上画框/圆点/标签，保存标注图 | `image`、`items` 必填；`coords`、`out_path`、`style` |
 | `crop_image` | 按坐标裁切（可边缘外扩 expand_px） | `image`、`box` 必填；`coords`、`expand_px` |
@@ -135,6 +136,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 | `locate_object`（坐标输出） | 模型直接输出像素/归一化坐标 | 通用兜底；几何图形可用，复杂元素 20-70px 偏差 |
 | `som_locate`（编号引用） | 叠加编号标记，模型选编号，逐轮裁切收敛 | **无 grounding 训练的模型（MiMo）推荐**；把坐标问题变成编号问题 |
 | `cursor_locate`（交互搜索） | 渲染光标，模型输出相对偏移，视觉反馈逐步逼近 | 需要高精度时；对"相对偏移"的估计比绝对坐标准（参考 GUI-Cursor 交互式搜索） |
+| `cv_locate`（CV 备选） | 颜色分割 + 连通域质心 / 模板匹配，纯本地像素级 | **简单目标备选**：纯色 UI 元素（点击类）、几何图形、固定模板元件；泛化有限，通用目标用 VLM |
 
 **VLM 选型建议（定位场景）**：推荐使用经过 grounding 训练的视觉模型，精度比通用 VLM 直接输出坐标高一个量级（业界证据：GUI-Actor / SE-GUI / GUI-Cursor 论文均指出文本坐标生成存在"空间-语义对齐弱"问题）：
 
@@ -324,8 +326,9 @@ scan_anomalies(image, target="摆放歪斜、方向与周边不一致的元件",
 - 新增 `som_locate`：**Set-of-Mark 编号网格递归定位**——叠加编号标记，模型只回答编号（不输出坐标），逐轮裁切 2x 放大收敛；对无 grounding 训练的通用 VLM（MiMo）比直接输出坐标更友好；支持 `grid`(1-12)/`rounds`(1-5)/`expand` 参数与标记图输出
 - 新增 `cursor_locate`：**移动光标 + 视觉反馈循环定位**——渲染光标位置，模型输出目标相对光标的偏移（dx/dy，带步长钳制与收敛检测），逐步逼近目标中心（参考 GUI-Cursor 交互式搜索范式，ICML 2026）；支持 `max_steps`/`step_ratio`/`start` 参数与光标图输出
 - 定位方法学章节：三种模式对比（坐标输出 / 编号引用 / 交互搜索）+ grounding VLM 选型建议（首选 Qwen-3-VL-8B，保底 Qwen-2.5-VL-7B）
-- 工具 21 → **23**；serverInfo 版本 1.10.0
-- 测试增至 **125 项**（mock，不依赖真实 key）
+- 工具 21 → **24**；serverInfo 版本 1.10.0
+- 新增 `cv_locate`（**备选方案**）：颜色分割 + 连通域质心（像素级，实测 0-4px，纯本地零依赖）或模板匹配；`som_locate` 新增 `final="cv"` 末轮模式（VLM 收敛后 CV 精定位，实测红圆 0px / 绿三角 4px，速度 1s 内）；适用简单目标（纯色 UI/几何/固定模板），泛化有限，通用目标用 VLM
+- 测试增至 **142 项**（mock，不依赖真实 key）
 
 ## v1.9.1（2026-08-02）— MCP 响应协议修复（严格客户端兼容）
 

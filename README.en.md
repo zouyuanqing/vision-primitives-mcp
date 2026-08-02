@@ -46,7 +46,7 @@ Vision backend: **Xiaomi MiMo V2.5** (OpenAI-compatible API, fully multimodal, s
 
 
 
-## Tool Overview (23 tools)
+## Tool Overview (24 tools)
 
 
 
@@ -78,7 +78,8 @@ Vision backend: **Xiaomi MiMo V2.5** (OpenAI-compatible API, fully multimodal, s
 
 
 
-| `cursor_locate` | **Cursor-move + visual feedback loop locate**: render cursor, model outputs relative offset (dx/dy) to converge (GUI-Cursor paradigm) | `image`, `target` required; `max_steps`, `step_ratio`, `start` |
+| `cursor_locate` | **Cursor-move + visual feedback loop locate**: render cursor, model outputs relative offset (dx/dy) to converge (GUI-Cursor paradigm) | `image`, `target` required; `max_steps`, `step_ratio`, `start` |
+| `cv_locate` | **CV precision locate (fallback)**: color segmentation + connected-component centroid (pixel-level, measured 0-4px, zero-dependency) or template matching; for solid-color UI elements / geometric shapes / fixed templates; limited generalization | `image`, `target` required; `color`/`template` at least one; `min_area` |
 
 
 
@@ -538,7 +539,8 @@ Model (Codex):
 
 
 
-| `cursor_locate` (interactive search) | Render cursor, model outputs relative offset, visual-feedback convergence | When high precision is needed; relative-offset estimation beats absolute coordinates (GUI-Cursor interactive search) |
+| `cursor_locate` (interactive search) | Render cursor, model outputs relative offset, visual-feedback convergence | When high precision is needed; relative-offset estimation beats absolute coordinates (GUI-Cursor interactive search) |
+| `cv_locate` (CV fallback) | Color segmentation + connected-component centroid / template matching, pure-local pixel-level | **Fallback for simple targets**: solid-color UI elements (click-type), geometric shapes, fixed-template components; limited generalization, use VLM for general targets |
 
 
 
@@ -1042,11 +1044,12 @@ Conclusion: **cloud MiMo is the best cost/performance vision backend today**; lo
 
 
 
-- Tools 21 → **23**; serverInfo version 1.10.0
+- Tools 21 → **24**; serverInfo version 1.10.0
+- New `cv_locate` (**fallback**): color segmentation + connected-component centroid (pixel-level, measured 0-4px, pure-local zero-dependency) or template matching; `som_locate` gains `final="cv"` (VLM convergence then CV precision, measured red circle 0px / green triangle 4px, <1s); for simple targets (solid-color UI/geometry/fixed templates), limited generalization — use VLM for general targets
 
 
 
-- Tests → **125** (mock, no real key)
+- Tests → **142** (mock, no real key)
 
 
 

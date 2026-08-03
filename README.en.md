@@ -41,6 +41,16 @@ Test image (900×600, element positions known): red circle center (150,140), gre
 
 Takeaways: Qwen2.5-VL-7B grounding specialist (RefCOCO 93.7%) + non-thinking architecture gives 3-6x accuracy and 10-20x speed over Qwen3-VL-8B; both models lock into the wrong cell on green-triangle som (123px) — use `final="cv"` or crop-based locate instead.
 
+### Capability matrix (describe / OCR / fallback locate / text anchoring / multi-round reasoning)
+
+| Model | describe | OCR (after prompt fix) | som-cv (color target) | ui_locate text anchor | scratch paper reasoning |
+|---|---|---|---|---|---|
+| MiMo V2.5 (cloud) | 4.7s ✓ | 8.9s, 4/4 blocks | **0px** (3.2s) | 8.6s ✓ | 45.7s 3 rounds (missed figure trend) |
+| **Qwen2.5-VL-7B (local)** | 1.1s ✓ | 3.5-4.6s, 4/4 blocks | **0px** | 12.8s ✓ | **9.6s 1 round, fully correct** |
+| Qwen3-VL-8B (local) | ~10s | 23s, 4/4 blocks | 0px | — | — |
+
+Takeaways: OCR is sensitive to prompt length (simplified prompt restored 1→4 blocks on Qwen2.5-VL, 10x pipeline speedup); scratch multi-round reasoning depends on the model's autonomous look-at decisions (Qwen2.5-VL fully correct in 1 round, MiMo missed the figure trend); som-cv color segmentation is pure-local deterministic — the model only needs to pick the right cell.
+
 **Fallback-locate proof (MiMo, no grounding training)**: `som_locate final="cv"` reaches **0-4px** (red circle 0px / green triangle 4px) — the VLM only picks numbers (its strength), pixel precision goes to CV. Toolchain compensates model gap; every MiMo release will be re-benchmarked against this baseline.
 
 | Method | Red circle | Green triangle | Notes |

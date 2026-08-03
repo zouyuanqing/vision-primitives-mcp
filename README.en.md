@@ -24,6 +24,20 @@ Test image (900×600, element positions known): red circle center (150,140), gre
 
 ![locate comparison](docs/bench-locate-compare.png)
 
+**Full comparison incl. Qwen2.5-VL-7B (measured 2026-08-02):**
+
+![Qwen2.5-VL comparison](docs/bench-locate-compare-v25.png)
+
+### Model comparison matrix (same benchmark image, programmatic ground truth)
+
+| Model | locate red | locate tri | som red | som tri | per call | ui_parse full | ui_refine full |
+|---|---|---|---|---|---|---|---|
+| MiMo V2.5 (cloud) | 64px | 97px | — | — | 15-25s | — | — |
+| Qwen3-VL-8B (local) | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s (timeout) |
+| **Qwen2.5-VL-7B (local)** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
+
+Takeaways: Qwen2.5-VL-7B grounding specialist (RefCOCO 93.7%) + non-thinking architecture gives 3-6x accuracy and 10-20x speed over Qwen3-VL-8B; both models lock into the wrong cell on green-triangle som (123px) — use `final="cv"` or crop-based locate instead.
+
 | Method | Red circle | Green triangle | Notes |
 |---|---|---|---|
 | `locate_object` (coordinate output) | MiMo 64px / Qwen 89px | MiMo 97px / Qwen 164px | generic VLM direct coordinates, limited by vision-token granularity |

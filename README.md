@@ -24,6 +24,20 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 ![定位实测对比](docs/bench-locate-compare.png)
 
+**含 Qwen2.5-VL-7B 的完整对比（2026-08-02 实测）：**
+
+![Qwen2.5-VL 对比](docs/bench-locate-compare-v25.png)
+
+### 模型对比矩阵（同一基准图，程序化 ground truth）
+
+| 模型 | locate 红圆 | locate 绿三角 | som 红圆 | som 绿三角 | 单次调用 | ui_parse 全流程 | ui_refine 全流程 |
+|---|---|---|---|---|---|---|---|
+| MiMo V2.5（云端） | 64px | 97px | — | — | 15-25s | — | — |
+| Qwen3-VL-8B（本地） | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s（超时） |
+| **Qwen2.5-VL-7B（本地）** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
+
+要点：Qwen2.5-VL-7B 的 grounding 专才（RefCOCO 93.7%）+ 非思考型架构，定位精度 3-6 倍、速度 10-20 倍于 Qwen3-VL-8B；绿三角 som 两种模型都锁死（123px，首轮选偏），用 `final="cv"` 或裁切定位可解。
+
 | 方法 | 红圆 | 绿三角 | 备注 |
 |---|---|---|---|
 | `locate_object`（坐标输出） | MiMo 64px / Qwen 89px | MiMo 97px / Qwen 164px | 通用 VLM 直接输出坐标，受视觉 token 粒度限制 |

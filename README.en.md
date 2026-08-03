@@ -87,6 +87,7 @@ Coordinates: `pixel` (default, most accurate in practice) or `norm` (0-1000 norm
 - **Alternative Qwen-3-VL-8B**: measured 90-164px whole-image locate, 10-20x slower (thinking model, grounding not inherited); consider only for describe/OCR
 - Avoid: Qwen-3.5-9b (no grounding training, measured 210px), Gemma4-E4B (no grounding track record)
 - Cloud MiMo V2.5: excellent describe/OCR, pair with `som_locate` for locate; `ui_refine` review suggests strong cloud models
+- **Division of labor (measured)**: use Qwen2.5-VL-7B for locate/review; **OCR recall differs by model** (Qwen2.5-VL 1.2s but returns 1 block, Qwen3-VL/MiMo return all) — for text anchoring prefer Qwen3-VL/MiMo OCR; `cursor_locate` unusable on both local models (483/100px), cloud-only
 - **Measured benchmark (2026-08-02, Qwen2.5-VL-7B vs Qwen3-VL-8B)**: locate red circle 28 vs 90px, green triangle 27 vs 164px; som red circle 15 vs 77px; per-call 1.5 vs 20s; ui_parse 12.4 vs 29.4s; single-question review 0.6 vs 4.2s
 
 ## Quick start

@@ -87,6 +87,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 - **备选 Qwen-3-VL-8B**：实测整图 locate 90-164px、慢 10-20 倍（思考型且 grounding 未继承），仅描述/OCR 场景可考虑
 - 不推荐：Qwen-3.5-9b（无 grounding 训练，实测 210px）、Gemma4-E4B（无 grounding 记录）
 - 云端 MiMo V2.5：通用描述/OCR 优秀，定位需配合 `som_locate`；ui_refine 审查建议云端强模型
+- **分工建议（实测）**：定位/审查用 Qwen2.5-VL-7B；**OCR 召回率模型差异大**（Qwen2.5-VL 1.2s 但只回 1 块，Qwen3-VL/MiMo 全量返回）——文本锚定场景建议 OCR 用 Qwen3-VL/MiMo；`cursor_locate` 两种本地模型均不可用（483/100px），仅云端强模型
 - **实测基准（2026-08-02，Qwen2.5-VL-7B vs Qwen3-VL-8B）**：locate 红圆 28 vs 90px、绿三角 27 vs 164px；som 红圆 15 vs 77px；单次调用 1.5 vs 20s；ui_parse 12.4 vs 29.4s；单问题审查 0.6 vs 4.2s
 
 ## 快速上手

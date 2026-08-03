@@ -1657,6 +1657,9 @@ def tool_ocr_image(args):
         image_message(prompt, img),
     ])
     rows = extract_json(text)
+    if isinstance(rows, dict):
+        # 部分模型（Qwen2.5-VL）返回单个对象而非数组
+        rows = [rows]
     if not isinstance(rows, list):
         raise VisionError(f"OCR 结果格式异常: {str(rows)[:300]}")
     items = []

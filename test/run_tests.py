@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 27 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "ui_refine", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 28 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "ui_refine", "scratch_think", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -917,6 +917,86 @@ def test_ui_refine_e2e(api_base):
     check("ui_refine changes", r.get("changes", {}).get("before", 0) > 0, str(r.get("changes"))[:200])
 
 
+
+
+def test_scratchpad_chain():
+    import vision_primitives_mcp as vb
+    from PIL import Image
+    pad = vb.VisionScratchpad(Image.new("RGB", (900, 600)))
+    # 第一次 zoom：裁 (0,0,300,300) 放大 2x
+    assert pad.zoom_to([0, 0, 300, 300], zoom=2)
+    check("pad work size 1", pad.work.size == (600, 600), str(pad.work.size))
+    # work (100,100) -> orig (50,50)
+    check("pad to_orig 1", pad.to_orig([100, 100, 120, 120]) == [50, 50, 60, 60], str(pad.to_orig([100, 100, 120, 120])))
+    # 第二次 zoom：裁 work (150,150,300,300) 放大 2x
+    assert pad.zoom_to([150, 150, 300, 300], zoom=2)
+    check("pad work size 2", pad.work.size == (300, 300), str(pad.work.size))
+    # work (50,50) -> 父 (175,175) -> orig (87,87)
+    o = pad.to_orig([50, 50, 60, 60])
+    check("pad to_orig 2", o == [88, 88, 90, 90], str(o))
+    # 往返（取整误差容差 3px）
+    w = pad.to_work(o)
+    check("pad roundtrip", abs(w[0] - 50) <= 3 and abs(w[1] - 50) <= 3, str(w))
+    check("pad focus set", pad.layers["focus"] is not None, str(pad.layers["focus"]))
+    check("pad history len", len(pad.layers["history"]) == 2, str(pad.layers["history"]))
+
+
+def test_scratchpad_annotations():
+    import vision_primitives_mcp as vb
+    from PIL import Image
+    pad = vb.VisionScratchpad(Image.new("RGB", (400, 300)))
+    pad.add_annotation([10, 10, 50, 50], label="A")
+    pad.add_annotation([100, 100, 150, 150], label="B")
+    check("pad ann count", len(pad.layers["annotation"]) == 2, str(pad.layers["annotation"]))
+    check("pad remove", pad.remove_annotation([105, 105, 145, 145]) is True, "")
+    check("pad ann after remove", len(pad.layers["annotation"]) == 1, str(pad.layers["annotation"]))
+    # 渲染不报错
+    img = pad.render()
+    check("pad render", img.size == (400, 300), str(img.size))
+
+
+def test_scratch_think_loop(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 决策序列：look_at -> answer+done
+    MockVisionHandler.responses.append(json.dumps({"answer": None, "look_at": {"region": [100, 100, 300, 300], "zoom": 2}, "edit": [], "done": False}))
+    MockVisionHandler.responses.append(json.dumps({"answer": "图中有一个红色圆形", "look_at": None, "edit": [], "done": True}))
+    img = make_img(400, 300, (245, 246, 250))
+    p = tmp_png("scratch.png", img)
+    r = vb.tool_scratch_think({"image": p, "question": "图里有什么？", "max_rounds": 4})
+    check("scratch answer", "红色" in (r.get("answer") or ""), str(r.get("answer")))
+    check("scratch rounds", r.get("rounds") == 2, str(r.get("rounds")))
+    acts = [t.get("action") for t in r.get("trajectory", [])]
+    check("scratch actions", "look_at" in acts, str(acts))
+
+
+def test_scratch_think_edit(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    MockVisionHandler.responses.append(json.dumps({"answer": None, "look_at": None, "edit": [{"action": "add", "box": [50, 50, 100, 100], "label": "目标"}], "done": True}))
+    img = make_img(300, 200, (245, 246, 250))
+    p = tmp_png("scratch_edit.png", img)
+    r = vb.tool_scratch_think({"image": p, "question": "标注目标", "max_rounds": 3})
+    anns = r.get("annotations_orig", [])
+    check("scratch edit added", len(anns) == 1, str(anns))
+    check("scratch edit box", anns[0]["box"] == [50, 50, 100, 100], str(anns))
+
+
+def test_scratch_think_converge(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 两次 look_at 区域一样大（不缩小）-> 收敛 break
+    MockVisionHandler.responses.append(json.dumps({"answer": None, "look_at": {"region": [100, 100, 300, 300], "zoom": 2}, "done": False}))
+    MockVisionHandler.responses.append(json.dumps({"answer": None, "look_at": {"region": [100, 100, 300, 300], "zoom": 2}, "done": False}))
+    MockVisionHandler.responses.append(json.dumps({"answer": "x", "done": True}))
+    img = make_img(400, 300, (245, 246, 250))
+    p = tmp_png("scratch_cvg.png", img)
+    r = vb.tool_scratch_think({"image": p, "question": "q", "max_rounds": 5})
+    check("scratch converge", r.get("rounds", 0) <= 3, str(r.get("rounds")))
+    notes = [t.get("note") for t in r.get("trajectory", []) if t.get("note")]
+    check("scratch converge note", any("收敛" in str(n) for n in notes), str(notes))
+
+
 def test_health(api_base):
     import vision_primitives_mcp as vb
     res = vb.tool_vision_health()
@@ -998,6 +1078,12 @@ def main():
     test_ui_parse_no_dup_icon()
     test_apply_refine()
     test_ui_refine_e2e(api_base)
+    print("== 视觉草稿纸 scratch_think (v1.13) ==")
+    test_scratchpad_chain()
+    test_scratchpad_annotations()
+    test_scratch_think_loop(api_base)
+    test_scratch_think_edit(api_base)
+    test_scratch_think_converge(api_base)
     print("== health ==")
     test_health(api_base)
     srv.shutdown()

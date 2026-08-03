@@ -816,6 +816,217 @@ def tool_cv_locate(args):
     }
 
 
+# ----------------------------- 视觉草稿纸 scratch_think（v1.13）：跨轮层栈 + 自适应 zoom 推理 -----------------------------
+
+SCRATCH_PROMPT = """这是一张工作图，叠加了标注（红色框/编号）与焦点高亮（橙色框）。
+基于图中信息回答：{question}
+输出 JSON（不要输出其他文字）：
+{{"answer": "你的回答（能回答时填，否则 null）",
+  "look_at": {{"region": [x1,y1,x2,y2], "zoom": 2}} 或 null（放大细看某区域；本图像素坐标，zoom 2-4 推荐），
+  "edit": [{{"action": "add|remove", "box": [x1,y1,x2,y2], "label": "标注文字"}}] 或 []（本图像素坐标），
+  "done": true/false（回答完成时 true）}}
+注意：放大后只能看到局部；需要全局信息时 look_at 用整图范围。"""
+
+
+class VisionScratchpad:
+    """跨轮视觉推理草稿纸：层栈（annotation/candidate/focus/history）+ 坐标链。
+
+    层项一律存原图坐标系（裁切不破坏层）；渲染时统一换算到当前工作图。
+    coordinate_chain: [(off_x, off_y, scale)]，从工作图回推原图。
+    """
+
+    def __init__(self, base_image):
+        self.base = base_image
+        self.layers = {"annotation": [], "candidate": [], "focus": None, "history": []}
+        self.chain = []
+        self.work = base_image
+
+    # ---- 坐标换算 ----
+    def to_orig(self, box):
+        """工作图坐标 → 原图坐标。"""
+        for off_x, off_y, sc in reversed(self.chain):
+            box = [off_x + box[0] / sc, off_y + box[1] / sc,
+                   off_x + box[2] / sc, off_y + box[3] / sc]
+        return [int(round(v)) for v in box]
+
+    def to_work(self, box):
+        """原图坐标 → 工作图坐标。"""
+        for off_x, off_y, sc in self.chain:
+            box = [(box[0] - off_x) * sc, (box[1] - off_y) * sc,
+                   (box[2] - off_x) * sc, (box[3] - off_y) * sc]
+        return [int(round(v)) for v in box]
+
+    # ---- 裁切放大（自适应 zoom）----
+    def zoom_to(self, region, zoom=2.0):
+        """裁切 region（工作图系）并放大 zoom 倍，push 坐标链，更新 focus/history。"""
+        x1, y1, x2, y2 = [int(round(v)) for v in region]
+        w, h = self.work.size
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 - x1 < 20 or y2 - y1 < 20:
+            return False
+        crop = self.work.crop((x1, y1, x2, y2))
+        crop = crop.resize((int(crop.width * zoom), int(crop.height * zoom)), Image.LANCZOS)
+        self.chain.append((x1, y1, zoom))
+        self.work = crop
+        fbox = self.to_orig([x1, y1, x2, y2])
+        self.layers["focus"] = fbox
+        self.layers["history"].append(fbox)
+        return True
+
+    # ---- 层操作（全部原图系）----
+    def add_annotation(self, box_orig, label=""):
+        self.layers["annotation"].append({"box": [int(v) for v in box_orig], "label": str(label)})
+
+    def remove_annotation(self, box_orig):
+        """删除与 box_orig 中心最近的标注。"""
+        cx = (box_orig[0] + box_orig[2]) / 2
+        cy = (box_orig[1] + box_orig[3]) / 2
+        best, best_d = None, float("inf")
+        for a in self.layers["annotation"]:
+            b = a["box"]
+            ac = ((b[0] + b[2]) / 2 - cx) ** 2 + ((b[1] + b[3]) / 2 - cy) ** 2
+            if ac < best_d:
+                best, best_d = a, ac
+        if best is not None:
+            self.layers["annotation"].remove(best)
+            return True
+        return False
+
+    # ---- 渲染 ----
+    def render(self):
+        img = self.work.copy()
+        draw = ImageDraw.Draw(img, "RGBA")
+        fnt = _font(max(14, min(img.width, img.height) // 45))
+        # history：淡灰虚线（已细看区域）
+        for hb in self.layers["history"]:
+            b = self.to_work(hb)
+            for i in range(0, 4):
+                pass
+            draw.rectangle(b, outline=(150, 150, 150, 150), width=1)
+        # focus：橙色高亮
+        if self.layers["focus"]:
+            b = self.to_work(self.layers["focus"])
+            draw.rectangle(b, outline=(235, 160, 40, 230), width=3, fill=(235, 160, 40, 22))
+        # candidate：蓝色
+        for c in self.layers["candidate"]:
+            b = self.to_work(c["box"])
+            draw.rectangle(b, outline=(40, 100, 200, 200), width=2)
+        # annotation：红色 + 编号
+        for i, a in enumerate(self.layers["annotation"]):
+            b = self.to_work(a["box"])
+            draw.rectangle(b, outline=(220, 50, 50, 230), width=2)
+            lab = a.get("label") or str(i + 1)
+            draw.text((b[0] + 4, b[1] + 4), str(lab), fill=(220, 50, 50, 255), font=fnt)
+        return img
+
+
+def tool_scratch_think(args):
+    """视觉草稿纸多轮推理：跨轮层栈 + 自适应裁切放大。
+
+    无 grounding 模型（MiMo 等）通过"视觉工作记忆"（层栈）与"局部细看"（zoom）
+    完成跨区域多步推理，适合图文混合论文/文献理解等场景。
+    """
+    img, raw, label = load_image(args["image"])
+    question = str(args.get("question") or "").strip()
+    if not question:
+        raise VisionError("缺少参数: question")
+    max_rounds = int(args.get("max_rounds") or 5)
+    if not (1 <= max_rounds <= 12):
+        raise VisionError("max_rounds 范围 1-12")
+    default_zoom = float(args.get("zoom") or 2.0)
+    out_path = args.get("out_path")
+
+    pad = VisionScratchpad(img)
+    rounds_log = []
+    answer = None
+    last_area = None
+    for rnd in range(max_rounds):
+        work_img = pad.render()
+        prompt = SCRATCH_PROMPT.format(question=question)
+        try:
+            text = call_chat([
+                {"role": "system", "content": AUX_VISION_SYSTEM},
+                image_message(prompt, work_img),
+            ])
+            dec = extract_json(text)
+        except Exception as e:
+            log("scratch round", rnd + 1, "调用/解析失败:", str(e)[:120])
+            rounds_log.append({"round": rnd + 1, "error": "决策解析失败"})
+            continue
+        if not isinstance(dec, dict):
+            rounds_log.append({"round": rnd + 1, "error": "决策不是 JSON 对象"})
+            continue
+
+        # edit：写回 annotation 层（本图像素 → 原图系）
+        for e in dec.get("edit") or []:
+            if not isinstance(e, dict) or not e.get("box"):
+                continue
+            try:
+                b = [float(v) for v in e["box"]]
+            except (TypeError, ValueError):
+                continue
+            b_orig = pad.to_orig(b)
+            if e.get("action") == "add":
+                pad.add_annotation(b_orig, label=e.get("label") or "")
+            elif e.get("action") == "remove":
+                pad.remove_annotation(b_orig)
+
+        # look_at：自适应裁切放大
+        looked = False
+        la = dec.get("look_at")
+        if isinstance(la, dict) and la.get("region"):
+            try:
+                region = [float(v) for v in la["region"]]
+            except (TypeError, ValueError):
+                region = None
+            if region:
+                area = (region[2] - region[0]) * (region[3] - region[1])
+                z = float(la.get("zoom") or default_zoom)
+                z = max(1.5, min(8.0, z))
+                ok = pad.zoom_to(region, zoom=z)
+                rounds_log.append({"round": rnd + 1, "action": "look_at", "region": [int(v) for v in region], "zoom": z, "ok": ok})
+                looked = True
+                # 收敛检测：放大区域不再缩小 → 停止（防死循环）
+                if last_area is not None and area >= last_area * 0.85:
+                    rounds_log.append({"round": rnd + 1, "note": "收敛：zoom 区域未缩小"})
+                    break
+                last_area = area
+
+        # answer / done
+        if dec.get("answer"):
+            answer = str(dec["answer"])
+        done = dec.get("done") in (True, "true", 1, "1")
+        if answer or done:
+            rounds_log.append({"round": rnd + 1, "action": "answer", "answer": answer})
+        if done and not looked:
+            break
+        if answer and not looked:
+            break
+        if not looked and not done and not dec.get("answer"):
+            # 模型什么都没做 → 停（防空转）
+            rounds_log.append({"round": rnd + 1, "note": "模型未输出有效动作"})
+            break
+
+    result = {
+        "question": question,
+        "answer": answer,
+        "rounds": len(rounds_log),
+        "max_rounds": max_rounds,
+        "trajectory": rounds_log,
+        "annotations_orig": pad.layers["annotation"],
+        "focus_orig": pad.layers["focus"],
+        "history_orig": pad.layers["history"],
+        "image_size": [img.width, img.height],
+    }
+    if out_path:
+        pad.render().save(out_path, "PNG")
+        result["final_image"] = str(out_path)
+    if answer is None:
+        result["note"] = "未得到最终回答，可增大 max_rounds 或检查问题表述"
+    return result
+
+
 # ----------------------------- UI 结构化解析（v1.11）：文本锚定 + 类型检测器 -----------------------------
 
 UI_ACTION_VERBS = ("点击", "按下", "输入", "选择", "打开", "关闭", "切换", "滚动", "拖拽", "勾选", "取消勾选", "双击", "右键", "悬停", "聚焦", "清除", "提交", "确认", "取消", "click", "press", "type", "enter", "select", "open", "close", "switch", "scroll", "drag", "check", "submit", "confirm")
@@ -2973,6 +3184,7 @@ HANDLERS = {
     "ui_parse": tool_ui_parse,
     "ui_locate": tool_ui_locate,
     "ui_refine": tool_ui_refine,
+    "scratch_think": tool_scratch_think,
     "ocr_image": tool_ocr_image,
     "annotate_image": tool_annotate_image,
     "crop_image": tool_crop_image,
@@ -3287,6 +3499,21 @@ TOOLS = [
         },
     },
     {
+        "name": "scratch_think",
+        "description": "视觉草稿纸多轮推理：跨轮层栈（可编辑标注/焦点高亮/历史区域）+ 自适应裁切放大（模型自主决定细看哪里）。给无 grounding 模型提供视觉工作记忆，完成跨区域多步推理；适合图文混合论文/文献理解。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "question": {"type": "string", "description": "推理问题，如：图 2 展示了什么？方法与图 3 的关系？"},
+                "max_rounds": {"type": "integer", "description": "最大推理轮数，默认 5，范围 1-12"},
+                "zoom": {"type": "number", "description": "默认放大倍率，默认 2，范围 1.5-8"},
+                "out_path": {"type": "string", "description": "保存最终草稿纸图（叠加标注/焦点，必须位于输出目录内）"},
+            },
+            "required": ["image", "question"],
+        },
+    },
+    {
         "name": "compare_infer",
         "description": "多图联合推理（2-4 张）：每张图可带独立标注（items_per_image），联合对比/推理关系（差异、因果、时序、整体结论）。",
         "inputSchema": {
@@ -3421,7 +3648,7 @@ def handle_message(msg):
             "result": {
                 "protocolVersion": req_pv,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.12.0"},
+                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.13.0"},
             },
         }
     if method == "notifications/initialized":

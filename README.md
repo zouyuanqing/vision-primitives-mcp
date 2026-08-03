@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 27 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。
+让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 28 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。
 
 > **项目定位**：通用视觉推理桥接层——文本模型 + **任意 VLM** 的通用视觉工作流，本地隐私 + 单文件轻量。**不**与 UI-TARS / CogAgent 等端到端 GUI 模型竞争（它们有专门训练）；核心能力是**无 grounding 模型的兜底定位**：`som_locate`（编号递归）+ `cv_locate`（颜色/模板）让 MiMo 这类无 grounding 训练的模型达到像素级定位（实测 0-4px，接近甚至超过 grounding 模型）。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）。
 
@@ -71,7 +71,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 `cv_locate`（颜色分割 + 连通域质心）：纯本地、零 API 调用、实测 0-4px。**仅适用简单目标**（纯色 UI 点击元素、几何图形、固定模板），泛化有限，通用目标请用 VLM 定位。
 
-## 工具一览（27 个）
+## 工具一览（28 个）
 
 | 分类 | 工具 | 作用 |
 |---|---|---|
@@ -81,6 +81,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 | | `cursor_locate` | 移动光标 + 视觉反馈循环定位（GUI-Cursor 范式） |
 | | `cv_locate` | **CV 备选**：颜色分割/模板匹配，像素级，仅简单目标 |
 | `ui_parse` / `ui_locate` / `ui_refine` | **UI 结构化解析 / 文本锚定定位 / 检测框语义编辑**：YOLO 像素级检测 + 文本锚定 + VLM 审查修正（删除误检/语义标注/程序化合并） |
+| `scratch_think` | **视觉草稿纸多轮推理**：跨轮层栈（可编辑标注/焦点高亮/历史区域）+ 自适应裁切放大，无 grounding 模型的视觉工作记忆 |
 | 文字 | `ocr_image` | 逐文本块 OCR，带 bbox |
 | 图像处理 | `annotate_image` / `crop_image` / `zoom_region` | 标注 / 裁切 / 放大 |
 | 高级推理 | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | 多图对比 / 联合推理 / 交互式图形推理 / 虚拟标注推理 |
@@ -108,6 +109,23 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 - 云端 MiMo V2.5：通用描述/OCR 优秀，定位需配合 `som_locate`；ui_refine 审查建议云端强模型
 - **分工建议（实测）**：定位/审查用 Qwen2.5-VL-7B；**OCR 召回率模型差异大**（Qwen2.5-VL 1.2s 但只回 1 块，Qwen3-VL/MiMo 全量返回）——文本锚定场景建议 OCR 用 Qwen3-VL/MiMo；`cursor_locate` 两种本地模型均不可用（483/100px），仅云端强模型
 - **实测基准（2026-08-02，Qwen2.5-VL-7B vs Qwen3-VL-8B）**：locate 红圆 28 vs 90px、绿三角 27 vs 164px；som 红圆 15 vs 77px；单次调用 1.5 vs 20s；ui_parse 12.4 vs 29.4s；单问题审查 0.6 vs 4.2s
+
+## 视觉草稿纸（scratch_think）：无 grounding 模型的跨区域多轮推理
+
+**问题**：无 grounding 模型（MiMo 等）每次"看"都是独立调用——上一轮的框、标记、关注区域全部丢失，无法做跨区域多步推理（如论文图文理解：结构 → 细看图 → 公式 → 综合）。
+
+**机制**（v1.13）：
+1. **层栈**（annotation/candidate/focus/history）：中间状态持续渲染回图，模型每轮能看到并编辑（add/remove 标注）
+2. **自适应 zoom**：模型自主决定细看哪里（`look_at`），程序化裁切放大 2-4x，坐标链精确换算回原图
+3. **收敛检测**：zoom 区域不再缩小 → 自动停止，防死循环
+
+**论文场景实测**（MiMo V2.5，模拟论文页：标题/摘要/折线图/表格/公式/架构图）：
+- "DocQA 准确率 + Figure 1 趋势"：1 轮 19.8s 回答正确（91.2% + 曲线趋势）
+- "Figure 2 架构组成"：3 轮 70s，模型自主放大细看架构图后正确回答（Input/Layout Parse/Encoder/Decoder）
+
+![论文页 demo](docs/paper-demo.png)
+
+**适用**：图文混合论文/文献理解、长文档多区域推理、图表细看。**局限**：多轮 = 多倍延迟（每轮 10-20s），模型可能空转（已答但未设 done），建议 max_rounds ≤ 5。
 
 ## 快速上手
 

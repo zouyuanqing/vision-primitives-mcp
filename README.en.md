@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 27 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**.
+Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 28 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**.
 
 > **Positioning**: a general vision-reasoning bridge — text models + **any VLM** in a general vision workflow, local privacy, single-file lightweight. **Not** competing with end-to-end GUI models (UI-TARS / CogAgent, which have dedicated training); the core capability is **fallback locate without grounding models**: `som_locate` (numbered recursion) + `cv_locate` (color/template) give non-grounding models like MiMo pixel-level locate (measured 0-4px, close to or better than grounding models). Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present).
 
@@ -71,7 +71,7 @@ Each round overlays numbered marks; the model answers a number, then the region 
 
 `cv_locate` (color segmentation + connected-component centroid): pure-local, zero API calls, measured 0-4px. **Only for simple targets** (solid-color UI click elements, geometric shapes, fixed templates); limited generalization — use VLM locate for general targets.
 
-## Tool overview (27 tools)
+## Tool overview (28 tools)
 
 | Category | Tools | Purpose |
 |---|---|---|
@@ -81,6 +81,7 @@ Each round overlays numbered marks; the model answers a number, then the region 
 | | `cursor_locate` | cursor-move + visual-feedback loop locate (GUI-Cursor paradigm) |
 | | `cv_locate` | **CV fallback**: color segmentation / template matching, pixel-level, simple targets only |
 | `ui_parse` / `ui_locate` / `ui_refine` | **UI structured parsing / text-anchored locate / detection-box semantic editing**: YOLO pixel-level detection + text anchoring + VLM review (remove false positives / semantic labels / programmatic merge) |
+| `scratch_think` | **vision-scratchpad multi-round reasoning**: cross-round layer stack (editable annotations / focus highlight / history) + adaptive crop-and-zoom, visual working memory for non-grounding models |
 | Text | `ocr_image` | per-block OCR with bbox |
 | Image ops | `annotate_image` / `crop_image` / `zoom_region` | annotate / crop / zoom |
 | Advanced | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | multi-image compare / joint reasoning / interactive graph reasoning / virtual-annotation reasoning |
@@ -108,6 +109,23 @@ Coordinates: `pixel` (default, most accurate in practice) or `norm` (0-1000 norm
 - Cloud MiMo V2.5: excellent describe/OCR, pair with `som_locate` for locate; `ui_refine` review suggests strong cloud models
 - **Division of labor (measured)**: use Qwen2.5-VL-7B for locate/review; **OCR recall differs by model** (Qwen2.5-VL 1.2s but returns 1 block, Qwen3-VL/MiMo return all) — for text anchoring prefer Qwen3-VL/MiMo OCR; `cursor_locate` unusable on both local models (483/100px), cloud-only
 - **Measured benchmark (2026-08-02, Qwen2.5-VL-7B vs Qwen3-VL-8B)**: locate red circle 28 vs 90px, green triangle 27 vs 164px; som red circle 15 vs 77px; per-call 1.5 vs 20s; ui_parse 12.4 vs 29.4s; single-question review 0.6 vs 4.2s
+
+## Vision scratchpad (scratch_think): cross-region multi-round reasoning for non-grounding models
+
+**Problem**: non-grounding models (MiMo etc.) see each image in isolation — boxes/marks/regions from previous rounds are lost, blocking cross-region multi-step reasoning (e.g. paper understanding: structure → zoom into figures → formulas → synthesis).
+
+**Mechanism** (v1.13):
+1. **Layer stack** (annotation/candidate/focus/history): intermediate state re-rendered into the image each round; the model can see and edit it (add/remove annotations)
+2. **Adaptive zoom**: the model decides where to look (`look_at`); programmatic crop + 2-4x zoom; coordinate chain maps everything back to the original image
+3. **Convergence detection**: zoom region stops shrinking → auto-stop, preventing loops
+
+**Paper scenario (measured, MiMo V2.5, synthetic paper page: title/abstract/line-chart/table/formula/architecture diagram)**:
+- "DocQA accuracy + Figure 1 trend": 1 round 19.8s, correct (91.2% + curve trend)
+- "Figure 2 architecture": 3 rounds 70s, model autonomously zoomed into the diagram then answered correctly (Input/Layout Parse/Encoder/Decoder)
+
+![paper demo](docs/paper-demo.png)
+
+**Best for**: figure-text mixed papers/literature, long-document multi-region reasoning, chart detail inspection. **Limits**: rounds multiply latency (10-20s each); models may idle after answering (done not set); keep max_rounds ≤ 5.
 
 ## Quick start
 

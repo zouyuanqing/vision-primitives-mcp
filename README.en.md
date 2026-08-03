@@ -2,7 +2,9 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 27 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**. Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present).
+Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 27 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**.
+
+> **Positioning**: a general vision-reasoning bridge — text models + **any VLM** in a general vision workflow, local privacy, single-file lightweight. **Not** competing with end-to-end GUI models (UI-TARS / CogAgent, which have dedicated training); the core capability is **fallback locate without grounding models**: `som_locate` (numbered recursion) + `cv_locate` (color/template) give non-grounding models like MiMo pixel-level locate (measured 0-4px, close to or better than grounding models). Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present).
 
 ```
 text-only LLM (reasoning & decisions)
@@ -32,11 +34,14 @@ Test image (900×600, element positions known): red circle center (150,140), gre
 
 | Model | locate red | locate tri | som red | som tri | per call | ui_parse full | ui_refine full |
 |---|---|---|---|---|---|---|---|
-| MiMo V2.5 (cloud) | 64px | 97px | — | — | 15-25s | — | — |
+| MiMo V2.5 (cloud) | 64px | 97px | 82px | 123px | 15-25s | — | — |
+| MiMo + som-cv (fallback pipeline) | **0px** | **4px** | — | — | 10-12s | — | — |
 | Qwen3-VL-8B (local) | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s (timeout) |
 | **Qwen2.5-VL-7B (local)** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
 
 Takeaways: Qwen2.5-VL-7B grounding specialist (RefCOCO 93.7%) + non-thinking architecture gives 3-6x accuracy and 10-20x speed over Qwen3-VL-8B; both models lock into the wrong cell on green-triangle som (123px) — use `final="cv"` or crop-based locate instead.
+
+**Fallback-locate proof (MiMo, no grounding training)**: `som_locate final="cv"` reaches **0-4px** (red circle 0px / green triangle 4px) — the VLM only picks numbers (its strength), pixel precision goes to CV. Toolchain compensates model gap; every MiMo release will be re-benchmarked against this baseline.
 
 | Method | Red circle | Green triangle | Notes |
 |---|---|---|---|

@@ -2,7 +2,9 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 27 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）。
+让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 27 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。
+
+> **项目定位**：通用视觉推理桥接层——文本模型 + **任意 VLM** 的通用视觉工作流，本地隐私 + 单文件轻量。**不**与 UI-TARS / CogAgent 等端到端 GUI 模型竞争（它们有专门训练）；核心能力是**无 grounding 模型的兜底定位**：`som_locate`（编号递归）+ `cv_locate`（颜色/模板）让 MiMo 这类无 grounding 训练的模型达到像素级定位（实测 0-4px，接近甚至超过 grounding 模型）。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）。
 
 ```
 纯文本模型（推理与决策）
@@ -32,11 +34,14 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 | 模型 | locate 红圆 | locate 绿三角 | som 红圆 | som 绿三角 | 单次调用 | ui_parse 全流程 | ui_refine 全流程 |
 |---|---|---|---|---|---|---|---|
-| MiMo V2.5（云端） | 64px | 97px | — | — | 15-25s | — | — |
+| MiMo V2.5（云端） | 64px | 97px | 82px | 123px | 15-25s | — | — |
+| MiMo + som-cv（兜底管线） | **0px** | **4px** | — | — | 10-12s | — | — |
 | Qwen3-VL-8B（本地） | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s（超时） |
 | **Qwen2.5-VL-7B（本地）** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
 
 要点：Qwen2.5-VL-7B 的 grounding 专才（RefCOCO 93.7%）+ 非思考型架构，定位精度 3-6 倍、速度 10-20 倍于 Qwen3-VL-8B；绿三角 som 两种模型都锁死（123px，首轮选偏），用 `final="cv"` 或裁切定位可解。
+
+**兜底定位验证（MiMo 无 grounding 训练）**：`som_locate final="cv"` 让 MiMo 达到 **0-4px**（红圆 0px / 绿三角 4px）——VLM 只做编号选择（其擅长），像素级精度交给 CV。工具链补足模型差距，这就是"无 grounding 模型兜底定位"的可行性证明；后续每次 MiMo 版本更新将在此基准上重测追踪。
 
 | 方法 | 红圆 | 绿三角 | 备注 |
 |---|---|---|---|

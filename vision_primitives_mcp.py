@@ -1857,10 +1857,9 @@ def tool_ocr_image(args):
         log("cache hit: ocr")
         return hit
     prompt = (
-        f"请对这张图像（宽 {img.width}px，高 {img.height}px）做 OCR：提取图像中所有文字块，输出 JSON 数组（不要输出其他文字）:\n"
-        '[{"text":"文字内容","box":[x1,y1,x2,y2]}]'
-        f"\n- box 为像素坐标 [x1,y1,x2,y2]，图像宽 {img.width}px 高 {img.height}px。\n"
-        "- 每行/每个独立文本块一条；没有文字返回 []。"
+        f"请对这张图像做 OCR：提取图像中所有文字块，输出 JSON 数组（每块一个对象，不要遗漏）:\n"
+        f'[{{"text":"...","box":[x1,y1,x2,y2]}}]\n'
+        f"- box 为像素坐标，图像宽 {img.width}px 高 {img.height}px"
         + (f"\n- 语言提示：{language}" if language != "auto" else "")
     )
     text = call_chat([

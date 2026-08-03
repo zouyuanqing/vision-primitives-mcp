@@ -86,7 +86,8 @@ Coordinates: `pixel` (default, most accurate in practice) or `norm` (0-1000 norm
 - **First choice Qwen-3-VL-8B** (local LM Studio): grounding-trained, measured 0-3px on cropped images
 - **Safe fallback Qwen-2.5-VL-7B**: hard grounding evidence (RefCOCO 93.7%)
 - Avoid: Qwen-3.5-9b (no grounding training, measured 210px), Gemma4-E4B (no grounding track record)
-- Cloud MiMo V2.5: excellent describe/OCR, pair with `som_locate` for locate
+- Cloud MiMo V2.5: excellent describe/OCR, pair with `som_locate` for locate; `ui_refine` review suggests strong cloud models
+- **Measured benchmark (2026-08-02, Qwen2.5-VL-7B vs Qwen3-VL-8B)**: locate red circle 28 vs 90px, green triangle 27 vs 164px; som red circle 15 vs 77px; per-call 1.5 vs 20s; ui_parse 12.4 vs 29.4s; single-question review 0.6 vs 4.2s
 
 ## Quick start
 

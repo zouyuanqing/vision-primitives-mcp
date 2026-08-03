@@ -86,7 +86,8 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 - **首选 Qwen-3-VL-8B**（本地 LM Studio）：grounding 训练路线，实测裁切图定位 0-3px
 - **保底 Qwen-2.5-VL-7B**：grounding 能力有硬证据（RefCOCO 93.7%）
 - 不推荐：Qwen-3.5-9b（无 grounding 训练，实测 210px）、Gemma4-E4B（无 grounding 记录）
-- 云端 MiMo V2.5：通用描述/OCR 优秀，定位需配合 `som_locate`
+- 云端 MiMo V2.5：通用描述/OCR 优秀，定位需配合 `som_locate`；ui_refine 审查建议云端强模型
+- **实测基准（2026-08-02，Qwen2.5-VL-7B vs Qwen3-VL-8B）**：locate 红圆 28 vs 90px、绿三角 27 vs 164px；som 红圆 15 vs 77px；单次调用 1.5 vs 20s；ui_parse 12.4 vs 29.4s；单问题审查 0.6 vs 4.2s
 
 ## 快速上手
 

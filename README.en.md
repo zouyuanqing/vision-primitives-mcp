@@ -34,7 +34,7 @@ Test image (900×600, element positions known): red circle center (150,140), gre
 
 | Model | locate red | locate tri | som red | som tri | per call | ui_parse full | ui_refine full |
 |---|---|---|---|---|---|---|---|
-| MiMo V2.5 (cloud) | 64px | 97px | 82px | 123px | 15-25s | — | — |
+| MiMo V2.5 (cloud) | 10-64px (variance) | 79-97px (variance) | 33-82px (variance) | 13-123px (variance) | 15-25s | 21.5s | — |
 | MiMo + som-cv (fallback pipeline) | **0px** | **4px** | — | — | 10-12s | — | — |
 | Qwen3-VL-8B (local) | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s (timeout) |
 | **Qwen2.5-VL-7B (local)** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
@@ -106,7 +106,7 @@ Coordinates: `pixel` (default, most accurate in practice) or `norm` (0-1000 norm
 - **First choice Qwen-2.5-VL-7B** (local LM Studio): dedicated grounding training (RefCOCO 93.7%), measured whole-image locate 27-28px / som 15px, 1.3-1.7s per call (non-thinking, 10-20x faster)
 - **Alternative Qwen-3-VL-8B**: measured 90-164px whole-image locate, 10-20x slower (thinking model, grounding not inherited); consider only for describe/OCR
 - Avoid: Qwen-3.5-9b (no grounding training, measured 210px), Gemma4-E4B (no grounding track record)
-- Cloud MiMo V2.5: excellent describe/OCR, pair with `som_locate` for locate; `ui_refine` review suggests strong cloud models
+- Cloud MiMo V2.5: excellent describe/OCR, but **high locate variance** (10-64px across calls) — **use `VISION_SAMPLES=3`** (median of samples); `ui_refine` review suggests strong cloud models
 - **Division of labor (measured)**: use Qwen2.5-VL-7B for locate/review; **OCR recall differs by model** (Qwen2.5-VL 1.2s but returns 1 block, Qwen3-VL/MiMo return all) — for text anchoring prefer Qwen3-VL/MiMo OCR; `cursor_locate` unusable on both local models (483/100px), cloud-only
 - **Measured benchmark (2026-08-02, Qwen2.5-VL-7B vs Qwen3-VL-8B)**: locate red circle 28 vs 90px, green triangle 27 vs 164px; som red circle 15 vs 77px; per-call 1.5 vs 20s; ui_parse 12.4 vs 29.4s; single-question review 0.6 vs 4.2s
 
@@ -159,6 +159,8 @@ Key env vars: `VISION_TIMEOUT_S`(120) / `VISION_MAX_IMAGE_MB`(20) / `VISION_SAMP
 - **SSRF guard**: URL images block private/link-local/metadata addresses by default (loopback allowed), `VISION_ALLOW_PRIVATE_NET=1` to allow; URL images limited to 50MP decompressed (local files support 200MP PCB)
 
 ## Changelog (condensed)
+
+- **v1.13.1 (2026-08-02)**: OCR prompt simplification — Qwen2.5-VL recall 1→4 blocks stable, ui_locate 122s→12.8s; full MiMo benchmark with variance ranges
 
 - **v1.10 (2026-08-02)**: SoM numbered locate (`som_locate`, final=box/number/cv), Cursor interactive search, CV fallback (`cv_locate`); 24 tools; 142 tests; locate methodology + grounding VLM selection sections; MCP protocol fix (jsonrpc/id in response frames, strict-client compatibility)
 - **v1.9 (2026-08-02)**: Computer Use (8 screen-control tools, safety switch default off)

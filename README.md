@@ -34,7 +34,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 | 模型 | locate 红圆 | locate 绿三角 | som 红圆 | som 绿三角 | 单次调用 | ui_parse 全流程 | ui_refine 全流程 |
 |---|---|---|---|---|---|---|---|
-| MiMo V2.5（云端） | 64px | 97px | 82px | 123px | 15-25s | — | — |
+| MiMo V2.5（云端） | 10-64px（波动） | 79-97px（波动） | 33-82px（波动） | 13-123px（波动） | 15-25s | 21.5s | — |
 | MiMo + som-cv（兜底管线） | **0px** | **4px** | — | — | 10-12s | — | — |
 | Qwen3-VL-8B（本地） | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s（超时） |
 | **Qwen2.5-VL-7B（本地）** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
@@ -106,7 +106,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 - **首选 Qwen-2.5-VL-7B**（本地 LM Studio）：专门 grounding 训练（RefCOCO 93.7%），实测整图 locate 27-28px / som 15px，单次调用 1.3-1.7s（非思考型，快 10-20 倍）
 - **备选 Qwen-3-VL-8B**：实测整图 locate 90-164px、慢 10-20 倍（思考型且 grounding 未继承），仅描述/OCR 场景可考虑
 - 不推荐：Qwen-3.5-9b（无 grounding 训练，实测 210px）、Gemma4-E4B（无 grounding 记录）
-- 云端 MiMo V2.5：通用描述/OCR 优秀，定位需配合 `som_locate`；ui_refine 审查建议云端强模型
+- 云端 MiMo V2.5：通用描述/OCR 优秀，定位**波动大**（同调用 10-64px）——**务必开 `VISION_SAMPLES=3`**（多次采样取中位数）；ui_refine 审查建议云端强模型
 - **分工建议（实测）**：定位/审查用 Qwen2.5-VL-7B；**OCR 召回率模型差异大**（Qwen2.5-VL 1.2s 但只回 1 块，Qwen3-VL/MiMo 全量返回）——文本锚定场景建议 OCR 用 Qwen3-VL/MiMo；`cursor_locate` 两种本地模型均不可用（483/100px），仅云端强模型
 - **实测基准（2026-08-02，Qwen2.5-VL-7B vs Qwen3-VL-8B）**：locate 红圆 28 vs 90px、绿三角 27 vs 164px；som 红圆 15 vs 77px；单次调用 1.5 vs 20s；ui_parse 12.4 vs 29.4s；单问题审查 0.6 vs 4.2s
 
@@ -159,6 +159,8 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 - **SSRF 防护**：URL 图片默认拦截私网/链路本地/元数据地址（回环放行），`VISION_ALLOW_PRIVATE_NET=1` 放行；URL 来源图片解压后限 50MP（本地文件支持 200MP PCB）
 
 ## 版本历史（精简）
+
+- **v1.13.1（2026-08-02）**：OCR prompt 简化修复——Qwen2.5-VL 召回 1→4 块稳定，ui_locate 链路 122s→12.8s；实测基准补齐（MiMo 全套波动区间、模型分工验证）
 
 - **v1.10（2026-08-02）**：SoM 编号定位（`som_locate`，final=box/number/cv）、Cursor 交互搜索、CV 备选方案（`cv_locate`）；工具 24 个；测试 142 项；定位方法学 + grounding VLM 选型章节；MCP 协议修复（响应帧补 jsonrpc/id，严格客户端兼容）
 - **v1.9（2026-08-02）**：Computer Use（8 个屏幕控制工具，安全开关默认关）

@@ -2152,7 +2152,7 @@ def tool_ocr_image(args):
     text = call_chat([
         {"role": "system", "content": AUX_VISION_SYSTEM},
         image_message(prompt, img),
-    ], max_tokens=8192)
+    ], max_tokens=max(1024, MAX_TOKENS))
     rows = extract_json(text)
     if isinstance(rows, dict):
         # 部分模型（Qwen2.5-VL）返回单个对象而非数组

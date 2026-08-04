@@ -2,9 +2,9 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 28 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**.
+Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 29 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**.
 
-> **Positioning**: a general vision-reasoning bridge — text models + **any VLM** in a general vision workflow, local privacy, single-file lightweight. **Not** competing with end-to-end GUI models (UI-TARS / CogAgent, which have dedicated training); the core capability is **fallback locate without grounding models**: `som_locate` (numbered recursion) + `cv_locate` (color/template) give non-grounding models like MiMo pixel-level locate (measured 0-4px, close to or better than grounding models). Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present).
+> **Positioning**: a general vision-reasoning bridge — text models + **any VLM** in a general vision workflow, local privacy, single-file lightweight. **Not** competing with end-to-end GUI models (UI-TARS / CogAgent, which have dedicated training); the core capability is **fallback locate without grounding models**: `som_locate` (numbered recursion) + `cv_locate` (color/template) give non-grounding models like MiMo pixel-level locate (measured 0-4px, close to or better than grounding models). Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present); text-region CRAFT optional (`models/craft_text.onnx` enables `text_detect`, needs onnxruntime).
 
 ```
 text-only LLM (reasoning & decisions)
@@ -81,7 +81,7 @@ Each round overlays numbered marks; the model answers a number, then the region 
 
 `cv_locate` (color segmentation + connected-component centroid): pure-local, zero API calls, measured 0-4px. **Only for simple targets** (solid-color UI click elements, geometric shapes, fixed templates); limited generalization — use VLM locate for general targets.
 
-## Tool overview (28 tools)
+## Tool overview (29 tools)
 
 | Category | Tools | Purpose |
 |---|---|---|
@@ -92,6 +92,7 @@ Each round overlays numbered marks; the model answers a number, then the region 
 | | `cv_locate` | **CV fallback**: color segmentation / template matching, pixel-level, simple targets only |
 | `ui_parse` / `ui_locate` / `ui_refine` | **UI structured parsing / text-anchored locate / detection-box semantic editing**: YOLO pixel-level detection + text anchoring + VLM review (remove false positives / semantic labels / programmatic merge) |
 | `scratch_think` | **vision-scratchpad multi-round reasoning**: cross-round layer stack (editable annotations / focus highlight / history) + adaptive crop-and-zoom, visual working memory for non-grounding models |
+| `text_detect` | **lightweight text-region detection** (CRAFT onnx, local zero-API): locate all text regions + numbered overlay layer; per-box crop-and-zoom for VLM precision reading (figure small text) |
 | Text | `ocr_image` | per-block OCR with bbox |
 | Image ops | `annotate_image` / `crop_image` / `zoom_region` | annotate / crop / zoom |
 | Advanced | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | multi-image compare / joint reasoning / interactive graph reasoning / virtual-annotation reasoning |
@@ -184,6 +185,7 @@ Key env vars: `VISION_TIMEOUT_S`(120) / `VISION_MAX_IMAGE_MB`(20) / `VISION_SAMP
 
 ## Changelog (condensed)
 
+- **v1.14 (2026-08-02)**: `text_detect` lightweight text-region detection (CRAFT onnx local, 3s/288 boxes; detect-locate → per-box crop-zoom VLM reading, solves figure small-text unreadability; numbered overlay output)
 - **v1.13.3 (2026-08-02)**: fixed long-JSON truncation — `extract_json` now recovers truncated arrays (extracts complete elements, drops the cut tail); OCR `max_tokens` 4096→8192 (large table OCR responses were cut, returning 1 block); measured MiMo table OCR 135 blocks / Qwen2.5-VL 34 blocks, all correct
 - **v1.13.2 (2026-08-02)**: paper_reader.py workflow (arXiv/URL/PDF/image → multi-screen → per-screen scratch_think); fixed env-timing pitfall
 - **v1.13.1 (2026-08-02)**: OCR prompt simplification — Qwen2.5-VL recall 1→4 blocks stable, ui_locate 122s→12.8s; full MiMo benchmark with variance ranges

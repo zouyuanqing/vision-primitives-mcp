@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 28 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "ui_refine", "scratch_think", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 29 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "ui_refine", "scratch_think", "text_detect", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")

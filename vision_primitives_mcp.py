@@ -1051,6 +1051,139 @@ def tool_scratch_think(args):
     return result
 
 
+# ----------------------------- 文本区域检测 text_detect（v1.14）：CRAFT 轻量检测 + 叠加隐藏图层 -----------------------------
+
+_CRAFT_SESSION = None
+_CRAFT_LOADED = False
+
+
+def _craft_session():
+    """懒加载 CRAFT onnx 会话（models/craft_text.onnx，无文件时返回 None）。"""
+    global _CRAFT_SESSION, _CRAFT_LOADED
+    if _CRAFT_LOADED:
+        return _CRAFT_SESSION
+    _CRAFT_LOADED = True
+    try:
+        path = _env("VISION_CRAFT_MODEL", "") or str(Path(__file__).resolve().parent / "models" / "craft_text.onnx")
+        if not os.path.exists(path):
+            log("CRAFT 模型不存在，文本检测不可用:", path)
+            _CRAFT_SESSION = None
+            return None
+        import onnxruntime as ort
+        _CRAFT_SESSION = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        log("CRAFT loaded:", path)
+    except Exception as e:
+        log("CRAFT 不可用:", str(e)[:120])
+        _CRAFT_SESSION = None
+    return _CRAFT_SESSION
+
+
+def _craft_detect(img, canvas=1280, low_text=0.4):
+    """CRAFT 文本区域检测。返回 [(box, score), ...] 原图像素坐标（box=[x1,y1,x2,y2]）。失败返回 []。"""
+    sess = _craft_session()
+    if sess is None:
+        return []
+    try:
+        import numpy as np
+        w, h = img.size
+        ratio = canvas / max(w, h)
+        nw = max(32, int(round(w * ratio / 32) * 32))
+        nh = max(32, int(round(h * ratio / 32) * 32))
+        rimg = img.resize((nw, nh), Image.LANCZOS)
+        arr = np.asarray(rimg, dtype=np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        arr = (arr - mean) / std
+        arr = arr.transpose(2, 0, 1)[None].astype(np.float32)
+        outs = sess.run(None, {"input": arr})
+        score = outs[0][0]  # [H/2, W/2, 2]: region + affinity
+        region = np.clip(score[..., 0], 0, 1)
+        affinity = np.clip(score[..., 1], 0, 1)
+        combined = np.clip(region + affinity, 0, 1)
+        mask = (combined > low_text).astype(np.uint8) * 255
+        mask_img = Image.fromarray(mask)
+        comps = _connected_components(mask_img)
+        sx = w * 2.0 / nw   # mask 像素 -> 原图像素（mask 是 H/2 x W/2）
+        sy = h * 2.0 / nh
+        boxes = []
+        for area, bbox, cent in comps:
+            if area < 15:
+                continue
+            # 区域平均分
+            rsub = region[bbox[1]:bbox[3] + 1, bbox[0]:bbox[2] + 1]
+            score_val = float(rsub.mean()) if rsub.size else 0.0
+            box = [int(bbox[0] * sx), int(bbox[1] * sy), int(bbox[2] * sx), int(bbox[3] * sy)]
+            box, _ = _clamp_list(box, w, h)
+            boxes.append((box, score_val))
+        return boxes
+    except Exception as e:
+        log("CRAFT 推理失败:", str(e)[:150])
+        return []
+
+
+def tool_text_detect(args):
+    """轻量文本区域检测（CRAFT onnx，本地零 API）：检测图中所有文字区域 bbox，
+    叠加半透明编号框图层（out_path 保存），供 VLM 按框裁切放大精读或 SoM 编号选择。
+
+    检测器只负责"文字在哪"，识别交给 VLM/OCR——解决插图小字在整图下不可读的问题。
+    """
+    img, raw, label = load_image(args["image"])
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    out_path = args.get("out_path")
+    min_area = int(args.get("min_area") or 80)
+
+    key = cache_key(raw, "text_detect", coords, str(out_path or ""))
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: text_detect")
+        return hit
+
+    boxes = _craft_detect(img)
+    items = []
+    for b, s in boxes:
+        bw = b[2] - b[0]
+        bh = b[3] - b[1]
+        if bw * bh < min_area:
+            continue
+        if bw < 12 or bh < 8:
+            continue
+        items.append({
+            "box_pixel": b,
+            "box_norm": to_norm(b, img.width, img.height),
+            "score": round(s, 3),
+        })
+
+    result = {
+        "count": len(items),
+        "items": items,
+        "image_size": [img.width, img.height],
+        "coords": coords,
+        "detector": "craft",
+    }
+    if out_path:
+        # 叠加隐藏图层：半透明红框 + 编号
+        marked = img.copy()
+        d = ImageDraw.Draw(marked, "RGBA")
+        fnt = _font(max(14, min(img.width, img.height) // 45))
+        for i, it in enumerate(items):
+            b = it["box_pixel"]
+            d.rectangle(b, outline=(255, 60, 60, 220), width=2, fill=(255, 60, 60, 22))
+            lab = str(i + 1)
+            d.text((b[0] + 3, b[1] + 3), lab, fill=(255, 50, 50, 255), font=fnt)
+        out = _resolve_out_path(out_path)
+        if out is None:
+            out = _unique_path("text_detect")
+        marked.save(out, "PNG")
+        result["overlay_image"] = str(out)
+        if coords == "norm":
+            for it in items:
+                it["box_pixel"] = it["box_norm"]
+    cache_set(key, result)
+    return result
+
+
 # ----------------------------- UI 结构化解析（v1.11）：文本锚定 + 类型检测器 -----------------------------
 
 UI_ACTION_VERBS = ("点击", "按下", "输入", "选择", "打开", "关闭", "切换", "滚动", "拖拽", "勾选", "取消勾选", "双击", "右键", "悬停", "聚焦", "清除", "提交", "确认", "取消", "click", "press", "type", "enter", "select", "open", "close", "switch", "scroll", "drag", "check", "submit", "confirm")
@@ -3208,6 +3341,7 @@ HANDLERS = {
     "ui_locate": tool_ui_locate,
     "ui_refine": tool_ui_refine,
     "scratch_think": tool_scratch_think,
+    "text_detect": tool_text_detect,
     "ocr_image": tool_ocr_image,
     "annotate_image": tool_annotate_image,
     "crop_image": tool_crop_image,
@@ -3537,6 +3671,20 @@ TOOLS = [
         },
     },
     {
+        "name": "text_detect",
+        "description": "轻量文本区域检测（CRAFT onnx，本地零 API）：检测图中所有文字区域 bbox，叠加半透明编号框图层（out_path 保存）。检测器只负责定位文字，识别交给 VLM/OCR（按框裁切放大）——解决插图小字在整图下不可读的问题。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
+                "min_area": {"type": "integer", "description": "最小文本块面积过滤，默认 80"},
+                "out_path": {"type": "string", "description": "保存叠加编号框的图层图（必须位于输出目录内）"},
+            },
+            "required": ["image"],
+        },
+    },
+    {
         "name": "compare_infer",
         "description": "多图联合推理（2-4 张）：每张图可带独立标注（items_per_image），联合对比/推理关系（差异、因果、时序、整体结论）。",
         "inputSchema": {
@@ -3671,7 +3819,7 @@ def handle_message(msg):
             "result": {
                 "protocolVersion": req_pv,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.13.0"},
+                "serverInfo": {"name": "vision-primitives-mcp", "version": "1.14.0"},
             },
         }
     if method == "notifications/initialized":

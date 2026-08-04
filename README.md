@@ -2,84 +2,50 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 30 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。
+让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 **30 个 MCP 工具**获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → UI 结构化 → 多轮推理 → 电脑操控**。视觉后端可切换（MiMo V2.5 云端 / LM Studio 本地 Qwen2.5-VL 等），单文件 Python，核心仅依赖 Pillow。
 
-> **项目定位**：通用视觉推理桥接层——文本模型 + **任意 VLM** 的通用视觉工作流，本地隐私 + 单文件轻量。**不**与 UI-TARS / CogAgent 等端到端 GUI 模型竞争（它们有专门训练）；核心能力是**无 grounding 模型的兜底定位**：`som_locate`（编号递归）+ `cv_locate`（颜色/模板）让 MiMo 这类无 grounding 训练的模型达到像素级定位（实测 0-4px，接近甚至超过 grounding 模型）。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）；文本区域检测 CRAFT 可选（`models/craft_text.onnx` 放置后 `text_detect` 启用，需 onnxruntime）。
+> **项目定位**：通用视觉推理桥接层——文本模型 + **任意 VLM** 的通用视觉工作流，本地隐私 + 单文件轻量。**高泛化优先**：核心能力（定位/切块/放大/读取）全部是纯 VLM + PIL，专用检测器（YOLO/CRAFT）只是可插拔加速器，有则加速、无则照跑。**不**与 UI-TARS / CogAgent 等端到端 GUI 模型竞争（它们有专门训练）；核心差异化是**无 grounding 模型的兜底定位**与**任何模型可用的多轮视觉推理**。
 
 ```
 纯文本模型（推理与决策）
     │  MCP 协议（stdio, JSON-RPC 2.0）
     ▼
-vision_primitives_mcp.py（单文件，24 工具，零第三方运行时依赖）
+vision_primitives_mcp.py（单文件，30 工具，186 项测试）
     │  OpenAI 兼容 API
     ▼
-MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
+MiMo V2.5（云端）/ Qwen2.5-VL-7B（本地 LM Studio）/ 任意视觉 VLM
 ```
 
-## 实测基准（2026-08-02，程序化 ground truth 验证）
+## 实测基准（2026-08-02，程序化 ground truth）
 
 测试图（900×600，元素位置为已知真值）：红圆中心 (150,140)、绿三角中心 (740,417)：
 
 ![测试基准图](docs/bench-test-image.png)
 
-### 整图定位对比（MiMo V2.5 vs 本地 Qwen3-VL-8B，各模式偏差）
+### 定位对比（三模型 × 多模式）
 
 ![定位实测对比](docs/bench-locate-compare.png)
 
-**含 Qwen2.5-VL-7B 的完整对比（2026-08-02 实测）：**
-
 ![Qwen2.5-VL 对比](docs/bench-locate-compare-v25.png)
 
-### 模型对比矩阵（同一基准图，程序化 ground truth）
+**定位矩阵**（同一基准图，像素级验证）：
 
-| 模型 | locate 红圆 | locate 绿三角 | som 红圆 | som 绿三角 | 单次调用 | ui_parse 全流程 | ui_refine 全流程 |
+| 模型 | locate 红圆 | locate 绿三角 | som 红圆 | som 绿三角 | 单次调用 | ui_parse | ui_refine |
 |---|---|---|---|---|---|---|---|
 | MiMo V2.5（云端） | 10-64px（波动） | 79-97px（波动） | 33-82px（波动） | 13-123px（波动） | 15-25s | 21.5s | — |
 | MiMo + som-cv（兜底管线） | **0px** | **4px** | — | — | 10-12s | — | — |
-| Qwen3-VL-8B（本地） | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s（超时） |
+| Qwen3-VL-8B（本地） | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s |
 | **Qwen2.5-VL-7B（本地）** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
 
-要点：Qwen2.5-VL-7B 的 grounding 专才（RefCOCO 93.7%）+ 非思考型架构，定位精度 3-6 倍、速度 10-20 倍于 Qwen3-VL-8B；绿三角 som 两种模型都锁死（123px，首轮选偏），用 `final="cv"` 或裁切定位可解。
-
-### 能力矩阵（描述 / OCR / 兜底定位 / 文本锚定 / 多轮推理）
+**能力矩阵**（describe / OCR / 兜底定位 / 文本锚定 / 多轮推理）：
 
 | 模型 | describe | OCR（prompt 修复后） | som-cv（颜色目标） | ui_locate 文本锚定 | scratch 论文推理 |
 |---|---|---|---|---|---|
-| MiMo V2.5（云端） | 4.7s ✓ | 8.9s，4/4 块 | **0px**（3.2s） | 8.6s ✓ | 45.7s 3轮（图趋势漏答） |
+| MiMo V2.5（云端） | 4.7s ✓ | 8.9s，4/4 块 | **0px**（3.2s） | 8.6s ✓ | 45.7s 3轮（漏答图趋势） |
 | **Qwen2.5-VL-7B（本地）** | 1.1s ✓ | 3.5-4.6s，4/4 块 | **0px** | 12.8s ✓ | **9.6s 1轮全对** |
 | Qwen3-VL-8B（本地） | ~10s | 23s，4/4 块 | 0px | — | — |
 
-要点：OCR 对 prompt 长度敏感（简化指令后 Qwen2.5-VL 召回 1→4 块、链路 10 倍加速）；scratch 多轮推理依赖模型的"自主细看"决策（Qwen2.5-VL 一轮全对，MiMo 漏答图趋势）；som-cv 的颜色分割部分为纯本地确定性，模型只需选对格子。
-
-**兜底定位验证（MiMo 无 grounding 训练）**：`som_locate final="cv"` 让 MiMo 达到 **0-4px**（红圆 0px / 绿三角 4px）——VLM 只做编号选择（其擅长），像素级精度交给 CV。工具链补足模型差距，这就是"无 grounding 模型兜底定位"的可行性证明；后续每次 MiMo 版本更新将在此基准上重测追踪。
-
-| 方法 | 红圆 | 绿三角 | 备注 |
-|---|---|---|---|
-| `locate_object`（坐标输出） | MiMo 64px / Qwen 89px | MiMo 97px / Qwen 164px | 通用 VLM 直接输出坐标，受视觉 token 粒度限制 |
-| `som_locate`（编号引用，3×3×2 轮） | Qwen **34px** | Qwen 123px | 把坐标问题变成编号问题，对无 grounding 模型更友好 |
-| `som_locate` 4×4 网格 | Qwen **16px** | 206px（首轮选偏锁死） | 更细网格提升，但依赖首轮正确性 |
-| `cursor_locate`（交互搜索） | Qwen 100px（5 步 80s） | — | 本地小模型对相对偏移估计有限，留给云端强模型 |
-| `som_locate final="cv"` | Qwen **0px**（<1s） | Qwen **4px**（<1s） | VLM 收敛 + CV 精定位，像素级且纯本地 |
-
-### 消融测试：定位偏差的根因是"分辨率稀释"
-
-![消融测试](docs/bench-ablation.png)
-
-- 输入分辨率 0.5x / 1x / 2x → 偏差 208 / 89 / 70px：**精度随分辨率单调提升**
-- 目标单独裁切后定位：红圆 **0px**、绿三角 **3px**：模型 grounding 能力完全在线
-- 结论：整图定位差 = 全局分辨率稀释（每个对象分到的视觉 token 太少），**对抗稀释的正确方法是"粗定位 → 裁切 → 精定位"**，这正是 `som_locate` 递归与 `final="cv"` 的原理
-
-### SoM 编号标记示例
-
-![SoM 编号标记](docs/bench-som-marks.png)
-
-每轮在图上叠加编号标记，模型只回答编号，随后裁切 2x 放大进入下一轮。
-
-### CV 备选方案：简单目标的像素级定位
-
-![CV 定位结果](docs/bench-cv-result.png)
-
-`cv_locate`（颜色分割 + 连通域质心）：纯本地、零 API 调用、实测 0-4px。**仅适用简单目标**（纯色 UI 点击元素、几何图形、固定模板），泛化有限，通用目标请用 VLM 定位。
+**消融：定位误差根因是"分辨率稀释"**——输入 0.5x→208px / 2x→70px / 目标单独裁切→**0-3px**。整图定位差不是模型能力问题，是每个对象分到的视觉 token 太少；**"粗定位 → 裁切 → 精定位"的管线是正解**（`som_locate` 递归、`final="cv"`、`text_zoom` 网格均基于此）。
 
 ## 工具一览（30 个）
 
@@ -87,85 +53,31 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 |---|---|---|
 | 基础视觉 | `describe_image` / `analyze_image` | 描述 / 结构化分析（含坐标原语） |
 | 定位 | `locate_object` | 坐标输出定位，`refine` 两阶段精修 |
-| | `som_locate` | **SoM 编号网格递归定位**（`final`: box/number/cv 三模式） |
-| | `cursor_locate` | 移动光标 + 视觉反馈循环定位（GUI-Cursor 范式） |
-| | `cv_locate` | **CV 备选**：颜色分割/模板匹配，像素级，仅简单目标 |
-| `ui_parse` / `ui_locate` / `ui_refine` | **UI 结构化解析 / 文本锚定定位 / 检测框语义编辑**：YOLO 像素级检测 + 文本锚定 + VLM 审查修正（删除误检/语义标注/程序化合并） |
-| `scratch_think` | **视觉草稿纸多轮推理**：跨轮层栈（可编辑标注/焦点高亮/历史区域）+ 自适应裁切放大，无 grounding 模型的视觉工作记忆 |
-| `text_detect` | **轻量文本区域检测**（CRAFT onnx，本地零 API）：定位图中所有文字区域 + 叠加编号框图层 |
-| `text_zoom` | **程序化切块放大读取（高泛化默认路径）**：网格切块逐块放大 VLM 读文字并拼接，任何 VLM 可用；CRAFT 存在时自动用检测框加速 |
-| 文字 | `ocr_image` | 逐文本块 OCR，带 bbox |
+| | `som_locate` | SoM 编号网格递归定位（`final`: box/number/cv 三模式） |
+| | `cursor_locate` | 移动光标 + 视觉反馈循环定位（GUI-Cursor 范式，建议云端强模型） |
+| | `cv_locate` | CV 兜底：颜色分割/模板匹配，像素级（numpy 加速 285x） |
+| 文本 | `ocr_image` | 逐文本块 OCR，带 bbox |
+| | `text_detect` | CRAFT 文本区域检测（本地 onnx，可选加速器） |
+| | `text_zoom` | **程序化切块放大读取（高泛化默认路径）**：网格逐块放大 VLM 精读 |
+| UI 结构化 | `ui_parse` / `ui_locate` / `ui_refine` | YOLO 检测 + 文本锚定 + VLM 语义编辑检测框 |
 | 图像处理 | `annotate_image` / `crop_image` / `zoom_region` | 标注 / 裁切 / 放大 |
-| 高级推理 | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | 多图对比 / 联合推理 / 交互式图形推理 / 虚拟标注推理 |
-| 扫描 | `scan_anomalies` | 自动异常扫描：切块候选 → 高清逐点验证（PCB 元件实战） |
-| 电脑控制 | `screen_capture` / `screen_info` / `screen_click` / `screen_move` / `screen_drag` / `screen_scroll` / `screen_type` / `screen_key` | 截屏 + 鼠标键盘（安全开关默认关） |
-| 诊断 | `vision_health` | 后端配置与连通性检查 |
+| 高级推理 | `scratch_think` | **视觉草稿纸**：跨轮层栈 + 自适应裁切放大（图文论文理解） |
+| | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | 多图对比 / 联合推理 / 图形推理协议 / 虚拟标注 |
+| 扫描 | `scan_anomalies` | 自动异常扫描：切块候选 → 高清逐点验证（PCB 实战） |
+| 电脑控制 | `screen_capture` / `screen_info` / `screen_click` / `screen_move` / `screen_drag` / `screen_scroll` / `screen_type` / `screen_key` | 截屏 + 鼠标键盘（Windows-only，安全开关默认关） |
+| 诊断 | `vision_health` | 后端配置与连通性 |
 
-坐标系统：`pixel`（默认，实测最准）或 `norm`（0-1000 归一化），越界自动钳制。
+配套脚本 [paper_reader.py](paper_reader.py)：arXiv/URL/PDF/图片 → 多屏截图 → 分屏 scratch_think → 结构化摘要。
 
-## 定位方法学：四种模式与 VLM 选型
+## 核心方法论
 
-| 模式 | 原理 | 适用 |
-|---|---|---|
-| `locate_object` | 模型直接输出坐标 | 通用兜底；快速粗定位 |
-| `som_locate` | 编号引用 + 递归裁切，对抗分辨率稀释 | **通用推荐**（`final="box"` 末轮局部图直接输出框） |
-| `cursor_locate` | 相对偏移 + 视觉反馈逼近 | 需要交互式收敛时（建议云端强模型） |
-| `cv_locate` | 颜色分割 / 模板匹配，纯本地 | 简单目标备选：纯色 UI、几何、固定模板 |
-| `ui_parse` / `ui_locate` | **结构化解析 + 文本锚定**（OCR 文本匹配控件框）；可选 YOLO 检测器（OmniParser icon_detect） | **UI 点击类首选**：检测框像素级（实测红圆 4px 内），VLM 只做编号语义选择 |
-
-**VLM 选型建议**：定位场景优先 grounding 训练的模型（业界证据：GUI-Actor / SE-GUI / GUI-Cursor 均指出文本坐标生成的"空间-语义对齐弱"问题）：
-
-- **首选 Qwen-2.5-VL-7B**（本地 LM Studio）：专门 grounding 训练（RefCOCO 93.7%），实测整图 locate 27-28px / som 15px，单次调用 1.3-1.7s（非思考型，快 10-20 倍）
-- **备选 Qwen-3-VL-8B**：实测整图 locate 90-164px、慢 10-20 倍（思考型且 grounding 未继承），仅描述/OCR 场景可考虑
-- 不推荐：Qwen-3.5-9b（无 grounding 训练，实测 210px）、Gemma4-E4B（无 grounding 记录）
-- 云端 MiMo V2.5：通用描述/OCR 优秀，定位**波动大**（同调用 10-64px）——**务必开 `VISION_SAMPLES=3`**（多次采样取中位数）；ui_refine 审查建议云端强模型
-- **分工建议（实测）**：定位/审查用 Qwen2.5-VL-7B；**OCR 召回率模型差异大**（Qwen2.5-VL 1.2s 但只回 1 块，Qwen3-VL/MiMo 全量返回）——文本锚定场景建议 OCR 用 Qwen3-VL/MiMo；`cursor_locate` 两种本地模型均不可用（483/100px），仅云端强模型
-- **实测基准（2026-08-02，Qwen2.5-VL-7B vs Qwen3-VL-8B）**：locate 红圆 28 vs 90px、绿三角 27 vs 164px；som 红圆 15 vs 77px；单次调用 1.5 vs 20s；ui_parse 12.4 vs 29.4s；单问题审查 0.6 vs 4.2s
-
-## 视觉草稿纸（scratch_think）：无 grounding 模型的跨区域多轮推理
-
-**问题**：无 grounding 模型（MiMo 等）每次"看"都是独立调用——上一轮的框、标记、关注区域全部丢失，无法做跨区域多步推理（如论文图文理解：结构 → 细看图 → 公式 → 综合）。
-
-**机制**（v1.13）：
-1. **层栈**（annotation/candidate/focus/history）：中间状态持续渲染回图，模型每轮能看到并编辑（add/remove 标注）
-2. **自适应 zoom**：模型自主决定细看哪里（`look_at`），程序化裁切放大 2-4x，坐标链精确换算回原图
-3. **收敛检测**：zoom 区域不再缩小 → 自动停止，防死循环
-
-**论文场景实测**（MiMo V2.5，模拟论文页：标题/摘要/折线图/表格/公式/架构图）：
-- "DocQA 准确率 + Figure 1 趋势"：1 轮 19.8s 回答正确（91.2% + 曲线趋势）
-- "Figure 2 架构组成"：3 轮 70s，模型自主放大细看架构图后正确回答（Input/Layout Parse/Encoder/Decoder）
-
-![论文页 demo](docs/paper-demo.png)
-
-**适用**：图文混合论文/文献理解、长文档多区域推理、图表细看。**局限**：多轮 = 多倍延迟（每轮 10-20s），模型可能空转（已答但未设 done），建议 max_rounds ≤ 5。
-
-### 插图小字读取：高泛化优先（text_zoom）
-
-**设计原则**：不依赖专用模型的高泛化路径优先——`text_zoom` 网格切块 + 逐块放大 + VLM 精读，任何视觉后端可用。实测（Figure 1 图内 <10px 标注）：网格模式读出 "False Stop / Class Settings / False Direction"（此前 OCR 读不到、CRAFT 框不住）；CRAFT 检测器只是可选加速器，极小小字场景网格反而更优。
-
-```bash
-# 高泛化默认（无任何专用模型）
-python -m vision_primitives_mcp --tool text_zoom  # 或通过 MCP 调用
-# 参数：grid [3,2] / zoom 3 / detector auto|grid|craft
-```
-
-### 论文阅读工作流（paper_reader.py）
-
-配套脚本 [paper_reader.py](paper_reader.py)：arXiv/URL/PDF/图片 → 多屏截图 → 分屏 scratch_think 理解 → 结构化摘要。
-
-```bash
-python paper_reader.py 2509.21552                      # arXiv ID（自动查最新版本）
-python paper_reader.py https://example.com/paper.html  # 任意 URL
-python paper_reader.py paper.pdf                        # 本地 PDF（浏览器渲染，零额外依赖）
-python paper_reader.py figure.png                      # 本地图片
-python paper_reader.py 2509.21552 --screens 3 --rounds 3  # 3 屏（标题摘要/方法/实验）
-```
-
-依赖：playwright（截图）+ 本地/云端视觉后端（默认 Qwen2.5-VL-7B）。实测：GUI-Cursor 论文 3 屏流程，首屏一轮 22s 准确回答方法/创新/贡献。
+1. **对抗分辨率稀释**：一切定位精度的基础。`som_locate` 编号递归（模型只选格子）、`final="cv"`（VLM 收敛 + CV 像素级）、`text_zoom` 网格切块（插图小字）——三个工具共享"局部放大"原理，只是块的产生方式不同（模型决策 / 检测器 / 网格）
+2. **文本锚定**：UI 操作指令几乎总带文字——OCR 定位文字 → 控件框。比让模型猜坐标可靠一个量级
+3. **检测器可插拔**：YOLO（icon_detect）/ CRAFT（text）都是"有则加速、无则照跑"——高泛化路径（纯 VLM）始终可用
+4. **视觉草稿纸**（scratch_think）：无 grounding 模型缺"视觉工作记忆"——层栈把中间状态渲染回图，模型每轮可见可编辑；坐标链保证裁切放大后一切可映射回原图
+5. **几何判定程序化**：重叠合并、坐标换算、收敛检测这类确定性问题交给代码，VLM 只做语义判断（实测 VLM 合并会把相邻独立元素误并）
 
 ## 快速上手
-
-**UI 检测器（可选）**：下载 [OmniParser icon_detect](https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.pt)（39.7MB，MIT）放入 `models/icon_detect.pt`，`ui_parse` 自动启用 YOLO 像素级元素检测（需 `pip install ultralytics`）。
 
 ```toml
 # ~/.codex/config.toml
@@ -177,44 +89,51 @@ startup_timeout_sec = 60
 [mcp_servers.vision-primitives.env]
 VISION_API_BASE = "https://api.xiaomimimo.com/v1"      # 或本地 http://127.0.0.1:1234/v1
 VISION_API_KEY = "你的MiMo密钥"                          # 本地 LM Studio 用任意占位
-VISION_MODEL = "mimo-v2.5"                              # 或 qwen/qwen3-vl-8b
+VISION_MODEL = "mimo-v2.5"                              # 或 qwen/qwen2.5-vl-7b
 VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 ```
 
-关键环境变量：`VISION_TIMEOUT_S`(120) / `VISION_MAX_IMAGE_MB`(20) / `VISION_SAMPLES`(1，定位稳定性) / `VISION_DISABLE_THINKING`(本地思考型模型设 1) / `VISION_NO_SYSTEM`(本地小模型设 1)。完整列表见 [README.en.md](README.en.md)。
+**模型选型**：定位/审查/多轮推理首选 **Qwen2.5-VL-7B**（grounding 专才 + 非思考型，1.3-1.7s/次）；MiMo 通用但定位波动大，需 `VISION_SAMPLES=3`；Qwen3-VL-8B 仅描述/OCR 场景考虑。
+
+**可选增强**（全部"有则加速、无则照跑"）：
+
+| 增强 | 放置 | 收益 |
+|---|---|---|
+| numpy | `pip install numpy` | 模板匹配 285x 加速 |
+| YOLO UI 检测 | `models/icon_detect.pt`（[下载](https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.pt)，39.7MB） | ui_parse 像素级 UI 元素检测 |
+| CRAFT 文本检测 | `models/craft_text.onnx`（[下载](https://huggingface.co/KvaytG/craft-mlt-25k-onnx/resolve/main/craft.onnx)，79MB） | text_detect/text_zoom 检测框加速 |
+| playwright | `pip install playwright` | paper_reader 截图 |
 
 ## 已知边界（诚实声明）
 
-- **整图定位受分辨率稀释**：目标越复杂/越小偏差越大（20-164px），用 `som_locate` 递归或 `final="cv"` 对抗
-- **延迟**：MiMo 推理型模型单次 15-25s；本地 Qwen3-VL 单次 3-10s；`cv_locate` 纯本地毫秒级
-- **`scan_anomalies` 角度估计不稳定**（10°-35° 波动），价值在多候选 + 逐点验证，最终需实物核对
-- **`cursor_locate` 在本地小模型上表现一般**（相对偏移估计有限），建议云端强模型
-- **`ui_refine` 的 VLM 审查建议云端强模型**（本地 8B 思考型输出长 JSON 可达数分钟）；程序化合并/去重部分无此限制
-- **`cv_locate` 泛化有限**：仅颜色/模板特征明显的简单目标；模板匹配对纯色（零纹理）目标退化（ZNCC 数学特性）
-- **平台**：屏幕控制 8 工具为 Windows-only（ctypes + ImageGrab），macOS/Linux 下仅截屏/信息可用
-- **SSRF 防护**：URL 图片默认拦截私网/链路本地/元数据地址（回环放行），`VISION_ALLOW_PRIVATE_NET=1` 放行；URL 来源图片解压后限 50MP（本地文件支持 200MP PCB）
+- **整图定位受分辨率稀释**（20-164px），用 som 递归 / final="cv" / text_zoom 对抗
+- **极小小字（<10px）**：text_zoom 网格放大可读（实测 False Stop/Class Settings），但个别字符仍可能误读——模型识别极限
+- **`cursor_locate` 本地模型不可用**（483/100px），仅云端强模型；**`ui_refine` VLM 审查建议云端**（本地 8B 数分钟）
+- **OCR 对 prompt 长度敏感**（已修复，保持简短指令）；表格数据首选 DOM 提取，视觉 OCR 兜底（90-120s）
+- **平台**：屏幕控制 8 工具 Windows-only；**安全**：URL 图片有 SSRF 防护（私网拦截）与解压炸弹限制（URL 源 50MP）
+- **延迟**：MiMo 15-25s/次、本地 Qwen2.5-VL 1.3-1.7s/次、多轮推理按轮倍增
 
 ## 版本历史（精简）
 
-- **v1.14（2026-08-02）**：`text_detect` 轻量文本区域检测（CRAFT onnx，可选加速器）；`text_zoom` **程序化切块放大（高泛化默认路径）**——网格逐块放大 VLM 精读，实测读出图内 <10px 标注（False Stop/Class Settings），任何 VLM 可用；30 工具；186 测试
-- **v1.13.3（2026-08-02）**：修复长 JSON 输出截断——`extract_json` 增加数组截断容错（逐元素提取完整对象，丢弃截断元素）；OCR 调用 `max_tokens` 4096→8192（大表格 OCR 响应被截断导致只回 1 块）；实测 MiMo 表格 OCR 135 块 / Qwen2.5-VL 34 块全部正常
-- **v1.13.2（2026-08-02）**：paper_reader.py 论文阅读工作流（arXiv/URL/PDF/图片 → 多屏截图 → 分屏 scratch_think）；修复环境变量时序坑
-- **v1.13.1（2026-08-02）**：OCR prompt 简化修复——Qwen2.5-VL 召回 1→4 块稳定，ui_locate 链路 122s→12.8s；实测基准补齐（MiMo 全套波动区间、模型分工验证）
-
-- **v1.10（2026-08-02）**：SoM 编号定位（`som_locate`，final=box/number/cv）、Cursor 交互搜索、CV 备选方案（`cv_locate`）；工具 24 个；测试 142 项；定位方法学 + grounding VLM 选型章节；MCP 协议修复（响应帧补 jsonrpc/id，严格客户端兼容）
-- **v1.9（2026-08-02）**：Computer Use（8 个屏幕控制工具，安全开关默认关）
-- **v1.8.x**：compare_infer / reason_graph / annotate_infer（虚拟标注 + 图形推理）/ 坐标格式实验（像素最稳）/ extract_json 增强
-- **v1.7**：locate_object `refine` 两阶段精修（误差 70→20px）
-- **v1.1-1.6**：scan_anomalies 自动异常扫描（PCB 实战）、compare_images、中文 OCR 修复（GDI+ 渲染）
+- **v1.14（2026-08-02）**：text_detect（CRAFT 可选）+ text_zoom（程序化切块，高泛化默认路径，实测读出 <10px 图内标注）；30 工具 / 186 测试
+- **v1.13（2026-08-02）**：scratch_think 视觉草稿纸（层栈 + 自适应 zoom + 坐标链）；paper_reader.py 论文阅读工作流；OCR prompt 修复（召回 1→4 块）；extract_json 截断容错
+- **v1.12（2026-08-02）**：ui_refine 检测框语义编辑（VLM 删除误检/标注 + 程序化几何合并）
+- **v1.11（2026-08-02）**：ui_parse / ui_locate（UI 结构化 + 文本锚定）+ YOLO 可选检测 + SSRF/解压炸弹防护 + numpy 模板匹配
+- **v1.10（2026-08-02）**：som_locate（SoM 编号递归，final=box/number/cv）+ cursor_locate + cv_locate
+- **v1.9（2026-08-02）**：Computer Use（8 个屏幕控制工具，安全开关）
+- **v1.7-1.8**：refine 两阶段精修（70→20px）、reason_graph、annotate_infer、坐标格式实验（像素最稳）
+- **v1.1-1.6**：scan_anomalies（PCB 实战）、compare_images、中文 OCR 修复
+- **v1.9.1 / v1.13.3 修复记录**：MCP 响应帧 jsonrpc/id（严格客户端兼容）、长 JSON 截断容错
 
 ## 测试与安全
 
 ```bash
-python test\run_tests.py   # 142 项 mock 测试，不依赖真实 key
+python test\run_tests.py   # 186 项 mock 测试，不依赖真实 key
 python test\e2e_mimo.py    # 真实端到端（需要 VISION_API_KEY）
 ```
 
-- 输入图片只读，上传仅发往配置的后端；`out_path` 强制限定输出目录；URL 图片有 SSRF 与解压炸弹防护
-- API key 仅存本地配置；屏幕控制类工具默认拒绝（`VISION_ALLOW_SCREEN_CONTROL=1` 才启用）
+- 输入图片只读，上传仅发往配置的后端；`out_path` 强制限定输出目录
+- URL 图片：SSRF 防护（私网/链路本地/元数据拦截，回环放行）+ 解压后 50MP 限制
+- API key 仅存本地配置；屏幕控制类工具默认拒绝（`VISION_ALLOW_SCREEN_CONTROL=1` 启用）
 
 **仓库**：[github.com/zouyuanqing/vision-primitives-mcp](https://github.com/zouyuanqing/vision-primitives-mcp)

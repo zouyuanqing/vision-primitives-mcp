@@ -2,164 +2,82 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through 30 MCP tools: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → computer use**.
+Give text-only LLMs (DeepSeek / Codex / any MCP client) full vision through **30 MCP tools**: **describe → locate (coordinates) → OCR → annotate → crop/zoom → anomaly scan → UI structuring → multi-round reasoning → computer use**. Swappable vision backends (cloud MiMo V2.5 / local Qwen2.5-VL via LM Studio), single-file Python, Pillow-only core.
 
-> **Positioning**: a general vision-reasoning bridge — text models + **any VLM** in a general vision workflow, local privacy, single-file lightweight. **Not** competing with end-to-end GUI models (UI-TARS / CogAgent, which have dedicated training); the core capability is **fallback locate without grounding models**: `som_locate` (numbered recursion) + `cv_locate` (color/template) give non-grounding models like MiMo pixel-level locate (measured 0-4px, close to or better than grounding models). Swappable vision backends (cloud Xiaomi MiMo V2.5 / local Qwen3-VL via LM Studio), single-file Python; core Pillow-only, numpy optional (285x template-match speedup), YOLO detector optional (auto-enabled when `models/icon_detect.pt` present); text-region CRAFT optional (`models/craft_text.onnx` enables `text_detect`, needs onnxruntime).
+> **Positioning**: a general vision-reasoning bridge — text models + **any VLM** in a general vision workflow, local privacy, single-file lightweight. **High generalization first**: core capabilities (locate/tile/zoom/read) are pure VLM + PIL; dedicated detectors (YOLO/CRAFT) are pluggable accelerators — faster when present, full function without. **Not** competing with end-to-end GUI models (UI-TARS / CogAgent, which have dedicated training); differentiation is **fallback locate without grounding models** and **multi-round visual reasoning with any model**.
 
 ```
 text-only LLM (reasoning & decisions)
     │  MCP protocol (stdio, JSON-RPC 2.0)
     ▼
-vision_primitives_mcp.py (single file, 24 tools, zero third-party runtime deps)
+vision_primitives_mcp.py (single file, 30 tools, 186 tests)
     │  OpenAI-compatible API
     ▼
-MiMo V2.5 (cloud) / Qwen3-VL-8B (local LM Studio) / any vision VLM
+MiMo V2.5 (cloud) / Qwen2.5-VL-7B (local LM Studio) / any vision VLM
 ```
 
 ## Measured benchmark (2026-08-02, programmatic ground truth)
 
-Test image (900×600, element positions known): red circle center (150,140), green triangle center (740,417):
+Test image (900×600, known element positions): red circle center (150,140), green triangle center (740,417):
 
 ![test image](docs/bench-test-image.png)
 
-### Whole-image locate comparison (MiMo V2.5 vs local Qwen3-VL-8B)
+### Locate comparison (3 models × multiple modes)
 
 ![locate comparison](docs/bench-locate-compare.png)
 
-**Full comparison incl. Qwen2.5-VL-7B (measured 2026-08-02):**
-
 ![Qwen2.5-VL comparison](docs/bench-locate-compare-v25.png)
 
-### Model comparison matrix (same benchmark image, programmatic ground truth)
+**Locate matrix** (same benchmark image, pixel-level verification):
 
-| Model | locate red | locate tri | som red | som tri | per call | ui_parse full | ui_refine full |
+| Model | locate red | locate tri | som red | som tri | per call | ui_parse | ui_refine |
 |---|---|---|---|---|---|---|---|
 | MiMo V2.5 (cloud) | 10-64px (variance) | 79-97px (variance) | 33-82px (variance) | 13-123px (variance) | 15-25s | 21.5s | — |
-| MiMo + som-cv (fallback pipeline) | **0px** | **4px** | — | — | 10-12s | — | — |
-| Qwen3-VL-8B (local) | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s (timeout) |
+| MiMo + som-cv (fallback) | **0px** | **4px** | — | — | 10-12s | — | — |
+| Qwen3-VL-8B (local) | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s |
 | **Qwen2.5-VL-7B (local)** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
 
-Takeaways: Qwen2.5-VL-7B grounding specialist (RefCOCO 93.7%) + non-thinking architecture gives 3-6x accuracy and 10-20x speed over Qwen3-VL-8B; both models lock into the wrong cell on green-triangle som (123px) — use `final="cv"` or crop-based locate instead.
+**Capability matrix** (describe / OCR / fallback locate / text anchoring / multi-round reasoning):
 
-### Capability matrix (describe / OCR / fallback locate / text anchoring / multi-round reasoning)
-
-| Model | describe | OCR (after prompt fix) | som-cv (color target) | ui_locate text anchor | scratch paper reasoning |
+| Model | describe | OCR (post-fix) | som-cv (color) | ui_locate anchor | scratch paper |
 |---|---|---|---|---|---|
-| MiMo V2.5 (cloud) | 4.7s ✓ | 8.9s, 4/4 blocks | **0px** (3.2s) | 8.6s ✓ | 45.7s 3 rounds (missed figure trend) |
-| **Qwen2.5-VL-7B (local)** | 1.1s ✓ | 3.5-4.6s, 4/4 blocks | **0px** | 12.8s ✓ | **9.6s 1 round, fully correct** |
+| MiMo V2.5 (cloud) | 4.7s ✓ | 8.9s, 4/4 blocks | **0px** (3.2s) | 8.6s ✓ | 45.7s 3 rounds (missed trend) |
+| **Qwen2.5-VL-7B (local)** | 1.1s ✓ | 3.5-4.6s, 4/4 blocks | **0px** | 12.8s ✓ | **9.6s 1 round, correct** |
 | Qwen3-VL-8B (local) | ~10s | 23s, 4/4 blocks | 0px | — | — |
 
-Takeaways: OCR is sensitive to prompt length (simplified prompt restored 1→4 blocks on Qwen2.5-VL, 10x pipeline speedup); scratch multi-round reasoning depends on the model's autonomous look-at decisions (Qwen2.5-VL fully correct in 1 round, MiMo missed the figure trend); som-cv color segmentation is pure-local deterministic — the model only needs to pick the right cell.
-
-**Fallback-locate proof (MiMo, no grounding training)**: `som_locate final="cv"` reaches **0-4px** (red circle 0px / green triangle 4px) — the VLM only picks numbers (its strength), pixel precision goes to CV. Toolchain compensates model gap; every MiMo release will be re-benchmarked against this baseline.
-
-| Method | Red circle | Green triangle | Notes |
-|---|---|---|---|
-| `locate_object` (coordinate output) | MiMo 64px / Qwen 89px | MiMo 97px / Qwen 164px | generic VLM direct coordinates, limited by vision-token granularity |
-| `som_locate` (number reference, 3×3×2) | Qwen **34px** | Qwen 123px | turns coordinates into a numbering problem |
-| `som_locate` 4×4 grid | Qwen **16px** | 206px (locked into wrong cell) | finer grid helps but depends on round-1 correctness |
-| `cursor_locate` (interactive search) | Qwen 100px (5 steps, 80s) | — | local small model estimates offsets poorly; keep for strong cloud models |
-| `som_locate final="cv"` | Qwen **0px** (<1s) | Qwen **4px** (<1s) | VLM convergence + CV precision, pixel-level, pure-local |
-
-### Ablation: the root cause is "resolution dilution"
-
-![ablation](docs/bench-ablation.png)
-
-- Input 0.5x / 1x / 2x → 208 / 89 / 70px error: accuracy improves monotonically with resolution
-- Isolated crop of the target: red circle **0px**, green triangle **3px**: the model's grounding ability is fully intact
-- Conclusion: whole-image locate error = global resolution dilution (too few vision tokens per object). **The fix is "coarse locate → crop → precise locate"**, which is exactly what `som_locate` recursion and `final="cv"` do
-
-### SoM numbered marks example
-
-![som marks](docs/bench-som-marks.png)
-
-Each round overlays numbered marks; the model answers a number, then the region is cropped and 2x zoomed for the next round.
-
-### CV fallback: pixel-level locate for simple targets
-
-![cv result](docs/bench-cv-result.png)
-
-`cv_locate` (color segmentation + connected-component centroid): pure-local, zero API calls, measured 0-4px. **Only for simple targets** (solid-color UI click elements, geometric shapes, fixed templates); limited generalization — use VLM locate for general targets.
+**Ablation: locate error roots in "resolution dilution"** — input 0.5x→208px / 2x→70px / isolated crop→**0-3px**. Whole-image locate error is not model ability but too few vision tokens per object; **"coarse locate → crop → precise locate" pipelines are the fix** (`som_locate` recursion, `final="cv"`, `text_zoom` grid all build on this).
 
 ## Tool overview (30 tools)
 
 | Category | Tools | Purpose |
 |---|---|---|
-| Basic vision | `describe_image` / `analyze_image` | description / structured analysis with coordinate primitives |
-| Locate | `locate_object` | coordinate-output locate, `refine` two-stage refinement |
-| | `som_locate` | **SoM numbered-grid recursive locate** (`final`: box/number/cv) |
-| | `cursor_locate` | cursor-move + visual-feedback loop locate (GUI-Cursor paradigm) |
-| | `cv_locate` | **CV fallback**: color segmentation / template matching, pixel-level, simple targets only |
-| `ui_parse` / `ui_locate` / `ui_refine` | **UI structured parsing / text-anchored locate / detection-box semantic editing**: YOLO pixel-level detection + text anchoring + VLM review (remove false positives / semantic labels / programmatic merge) |
-| `scratch_think` | **vision-scratchpad multi-round reasoning**: cross-round layer stack (editable annotations / focus highlight / history) + adaptive crop-and-zoom, visual working memory for non-grounding models |
-| `text_detect` | **lightweight text-region detection** (CRAFT onnx, local zero-API): locate all text regions + numbered overlay layer |
-| `text_zoom` | **programmatic tile-and-zoom reading (high-generalization default)**: grid tiles, per-tile zoom + VLM reading, any VLM works; auto-uses CRAFT boxes when present |
+| Basic | `describe_image` / `analyze_image` | description / structured analysis with coordinate primitives |
+| Locate | `locate_object` | coordinate-output locate, `refine` two-stage |
+| | `som_locate` | SoM numbered-grid recursive locate (`final`: box/number/cv) |
+| | `cursor_locate` | cursor-move + visual-feedback loop (GUI-Cursor paradigm, cloud models suggested) |
+| | `cv_locate` | CV fallback: color segmentation / template matching, pixel-level (numpy 285x) |
 | Text | `ocr_image` | per-block OCR with bbox |
+| | `text_detect` | CRAFT text-region detection (local onnx, optional accelerator) |
+| | `text_zoom` | **programmatic tile-and-zoom (high-generalization default)**: grid tiles + VLM precision reading |
+| UI | `ui_parse` / `ui_locate` / `ui_refine` | YOLO detection + text anchoring + VLM semantic editing of detection boxes |
 | Image ops | `annotate_image` / `crop_image` / `zoom_region` | annotate / crop / zoom |
-| Advanced | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | multi-image compare / joint reasoning / interactive graph reasoning / virtual-annotation reasoning |
-| Scan | `scan_anomalies` | automated anomaly scan: tiled candidates → high-res verification (PCB components) |
-| Computer use | `screen_capture` / `screen_info` / `screen_click` / `screen_move` / `screen_drag` / `screen_scroll` / `screen_type` / `screen_key` | screenshot + mouse/keyboard (safety switch default off) |
+| Reasoning | `scratch_think` | **vision scratchpad**: cross-round layer stack + adaptive crop-and-zoom (paper understanding) |
+| | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | multi-image compare / joint reasoning / graph protocol / virtual annotations |
+| Scan | `scan_anomalies` | automated anomaly scan: tiled candidates → high-res verification (PCB) |
+| Computer use | `screen_capture` / `screen_info` / `screen_click` / `screen_move` / `screen_drag` / `screen_scroll` / `screen_type` / `screen_key` | screenshot + mouse/keyboard (Windows-only, safety switch default off) |
 | Diagnostics | `vision_health` | backend config & connectivity |
-
-Coordinates: `pixel` (default, most accurate in practice) or `norm` (0-1000 normalized), out-of-bounds clamped.
-
-## Locate methodology: four modes & VLM selection
-
-| Mode | Principle | When to use |
-|---|---|---|
-| `locate_object` | model outputs coordinates directly | general fallback; fast coarse locate |
-| `som_locate` | number reference + recursive crop, fights dilution | **recommended general** (`final="box"` outputs a box on the converged local image) |
-| `cursor_locate` | relative offset + visual-feedback convergence | interactive convergence (suggest strong cloud models) |
-| `cv_locate` | color segmentation / template matching, pure-local | fallback for simple targets: solid-color UI, geometry, fixed templates |
-| `ui_parse` / `ui_locate` | **structured parsing + text anchoring** (OCR text → control box); optional YOLO detector (OmniParser icon_detect) | **first choice for UI clicks**: pixel-level detection boxes (red circle 4px measured), VLM only does numbered semantic selection |
-
-**VLM selection advice**: prefer grounding-trained models for locate tasks (evidence: GUI-Actor / SE-GUI / GUI-Cursor papers identify weak spatial-semantic alignment in text-coordinate generation):
-
-- **First choice Qwen-2.5-VL-7B** (local LM Studio): dedicated grounding training (RefCOCO 93.7%), measured whole-image locate 27-28px / som 15px, 1.3-1.7s per call (non-thinking, 10-20x faster)
-- **Alternative Qwen-3-VL-8B**: measured 90-164px whole-image locate, 10-20x slower (thinking model, grounding not inherited); consider only for describe/OCR
-- Avoid: Qwen-3.5-9b (no grounding training, measured 210px), Gemma4-E4B (no grounding track record)
-- Cloud MiMo V2.5: excellent describe/OCR, but **high locate variance** (10-64px across calls) — **use `VISION_SAMPLES=3`** (median of samples); `ui_refine` review suggests strong cloud models
-- **Division of labor (measured)**: use Qwen2.5-VL-7B for locate/review; **OCR recall differs by model** (Qwen2.5-VL 1.2s but returns 1 block, Qwen3-VL/MiMo return all) — for text anchoring prefer Qwen3-VL/MiMo OCR; `cursor_locate` unusable on both local models (483/100px), cloud-only
-- **Measured benchmark (2026-08-02, Qwen2.5-VL-7B vs Qwen3-VL-8B)**: locate red circle 28 vs 90px, green triangle 27 vs 164px; som red circle 15 vs 77px; per-call 1.5 vs 20s; ui_parse 12.4 vs 29.4s; single-question review 0.6 vs 4.2s
-
-## Vision scratchpad (scratch_think): cross-region multi-round reasoning for non-grounding models
-
-**Problem**: non-grounding models (MiMo etc.) see each image in isolation — boxes/marks/regions from previous rounds are lost, blocking cross-region multi-step reasoning (e.g. paper understanding: structure → zoom into figures → formulas → synthesis).
-
-**Mechanism** (v1.13):
-1. **Layer stack** (annotation/candidate/focus/history): intermediate state re-rendered into the image each round; the model can see and edit it (add/remove annotations)
-2. **Adaptive zoom**: the model decides where to look (`look_at`); programmatic crop + 2-4x zoom; coordinate chain maps everything back to the original image
-3. **Convergence detection**: zoom region stops shrinking → auto-stop, preventing loops
-
-**Paper scenario (measured, MiMo V2.5, synthetic paper page: title/abstract/line-chart/table/formula/architecture diagram)**:
-- "DocQA accuracy + Figure 1 trend": 1 round 19.8s, correct (91.2% + curve trend)
-- "Figure 2 architecture": 3 rounds 70s, model autonomously zoomed into the diagram then answered correctly (Input/Layout Parse/Encoder/Decoder)
-
-![paper demo](docs/paper-demo.png)
-
-**Best for**: figure-text mixed papers/literature, long-document multi-region reasoning, chart detail inspection. **Limits**: rounds multiply latency (10-20s each); models may idle after answering (done not set); keep max_rounds ≤ 5.
-
-### Figure small-text reading: high generalization first (text_zoom)
-
-**Principle**: high-generalization path with no dedicated model dependency first — `text_zoom` grid-tiles + per-tile zoom + VLM precision reading, works with any vision backend. Measured (Figure 1 sub-10px labels): grid mode read "False Stop / Class Settings / False Direction" (previously unreadable by OCR, unbounded by CRAFT); CRAFT detector is an optional accelerator — grid wins on tiny labels.
-
-### Paper reading workflow (paper_reader.py)
 
 Companion script [paper_reader.py](paper_reader.py): arXiv/URL/PDF/image → multi-screen capture → per-screen scratch_think → structured summary.
 
-```bash
-python paper_reader.py 2509.21552                      # arXiv ID (auto-latest version)
-python paper_reader.py https://example.com/paper.html  # any URL
-python paper_reader.py paper.pdf                        # local PDF (browser-rendered, zero extra deps)
-python paper_reader.py figure.png                      # local image
-python paper_reader.py 2509.21552 --screens 3 --rounds 3  # 3 screens (abstract/method/experiments)
-```
+## Core methodology
 
-Deps: playwright (capture) + local/cloud vision backend (default Qwen2.5-VL-7B). Measured: GUI-Cursor paper, first screen answered method/innovation/contribution in 22s.
+1. **Fight resolution dilution**: the basis of all locate precision. `som_locate` (model picks numbers), `final="cv"` (VLM convergence + CV pixel-level), `text_zoom` (grid tiles) share the "local zoom" principle — differing only in how tiles are generated (model decision / detector / grid)
+2. **Text anchoring**: UI instructions almost always carry text — OCR locates text → control box. An order of magnitude more reliable than asking the model to guess coordinates
+3. **Pluggable detectors**: YOLO (icon_detect) / CRAFT (text) are "faster when present, full function without" — the high-generalization path (pure VLM) always works
+4. **Vision scratchpad** (scratch_think): non-grounding models lack "visual working memory" — the layer stack re-renders intermediate state into the image, editable every round; the coordinate chain maps everything back to the original image
+5. **Deterministic geometry in code**: overlap merging, coordinate mapping, convergence detection are programmatic; VLM handles semantics only (measured: VLM merging wrongly fuses adjacent elements)
 
 ## Quick start
-
-**UI detector (optional)**: download [OmniParser icon_detect](https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.pt) (39.7MB, MIT) into `models/icon_detect.pt`; `ui_parse` auto-enables pixel-level YOLO element detection (requires `pip install ultralytics`).
 
 ```toml
 # ~/.codex/config.toml
@@ -171,44 +89,51 @@ startup_timeout_sec = 60
 [mcp_servers.vision-primitives.env]
 VISION_API_BASE = "https://api.xiaomimimo.com/v1"      # or local http://127.0.0.1:1234/v1
 VISION_API_KEY = "your-mimo-key"                        # any placeholder for local LM Studio
-VISION_MODEL = "mimo-v2.5"                              # or qwen/qwen3-vl-8b
+VISION_MODEL = "mimo-v2.5"                              # or qwen/qwen2.5-vl-7b
 VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 ```
 
-Key env vars: `VISION_TIMEOUT_S`(120) / `VISION_MAX_IMAGE_MB`(20) / `VISION_SAMPLES`(1, locate stability) / `VISION_DISABLE_THINKING`(1 for local thinking models) / `VISION_NO_SYSTEM`(1 for small local models).
+**Model selection**: locate/review/multi-round reasoning → **Qwen2.5-VL-7B** (grounding specialist + non-thinking, 1.3-1.7s/call); MiMo is general but high locate variance — use `VISION_SAMPLES=3`; Qwen3-VL-8B only for describe/OCR.
+
+**Optional enhancements** (all "faster when present, full function without"):
+
+| Enhancement | Install | Benefit |
+|---|---|---|
+| numpy | `pip install numpy` | template matching 285x |
+| YOLO UI detector | `models/icon_detect.pt` ([download](https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.pt), 39.7MB) | pixel-level UI element detection in ui_parse |
+| CRAFT text detector | `models/craft_text.onnx` ([download](https://huggingface.co/KvaytG/craft-mlt-25k-onnx/resolve/main/craft.onnx), 79MB) | detection-box acceleration for text_detect/text_zoom |
+| playwright | `pip install playwright` | paper_reader screenshots |
 
 ## Known limits (honest)
 
-- **Whole-image locate suffers resolution dilution**: complex/small targets 20-164px error; fight it with `som_locate` recursion or `final="cv"`
-- **Latency**: MiMo reasoning model 15-25s per call; local Qwen3-VL 3-10s; `cv_locate` pure-local milliseconds
-- **`scan_anomalies` angle estimates unstable** (10°-35°), value is multi-candidate + per-candidate verification; physical check still required
-- **`cursor_locate` underperforms on local small models**; keep for strong cloud models
-- **`ui_refine` VLM review: suggest strong cloud models** (local 8B thinking models can take minutes on long JSON output); programmatic merge/dedup has no such limit
-- **`cv_locate` limited generalization**: only simple targets with clear color/template features; template matching degrades on solid (texture-free) targets (ZNCC property)
-- **Platform**: the 8 screen-control tools are Windows-only (ctypes + ImageGrab); on macOS/Linux only capture/info work
-- **SSRF guard**: URL images block private/link-local/metadata addresses by default (loopback allowed), `VISION_ALLOW_PRIVATE_NET=1` to allow; URL images limited to 50MP decompressed (local files support 200MP PCB)
+- **Whole-image locate suffers resolution dilution** (20-164px) — fight with som recursion / final="cv" / text_zoom
+- **Sub-10px labels**: text_zoom grid can read them (measured False Stop/Class Settings) but individual characters may still misread — model recognition limit
+- **`cursor_locate` unusable on local models** (483/100px), cloud-only; **`ui_refine` VLM review suggests cloud** (minutes on local 8B)
+- **OCR is prompt-length sensitive** (fixed — keep prompts short); table data: prefer DOM extraction, visual OCR as fallback (90-120s)
+- **Platform**: 8 screen-control tools are Windows-only; **security**: URL images have SSRF guard (private-net block) and decompression limit (URL source 50MP)
+- **Latency**: MiMo 15-25s/call, local Qwen2.5-VL 1.3-1.7s/call, multi-round reasoning multiplies per round
 
 ## Changelog (condensed)
 
-- **v1.14 (2026-08-02)**: `text_detect` text-region detection (CRAFT onnx, optional accelerator); `text_zoom` **programmatic tile-and-zoom (high-generalization default)** — grid tiles + VLM precision reading, measured reading sub-10px figure labels (False Stop/Class Settings), any VLM; 30 tools; 186 tests
-- **v1.13.3 (2026-08-02)**: fixed long-JSON truncation — `extract_json` now recovers truncated arrays (extracts complete elements, drops the cut tail); OCR `max_tokens` 4096→8192 (large table OCR responses were cut, returning 1 block); measured MiMo table OCR 135 blocks / Qwen2.5-VL 34 blocks, all correct
-- **v1.13.2 (2026-08-02)**: paper_reader.py workflow (arXiv/URL/PDF/image → multi-screen → per-screen scratch_think); fixed env-timing pitfall
-- **v1.13.1 (2026-08-02)**: OCR prompt simplification — Qwen2.5-VL recall 1→4 blocks stable, ui_locate 122s→12.8s; full MiMo benchmark with variance ranges
-
-- **v1.10 (2026-08-02)**: SoM numbered locate (`som_locate`, final=box/number/cv), Cursor interactive search, CV fallback (`cv_locate`); 24 tools; 142 tests; locate methodology + grounding VLM selection sections; MCP protocol fix (jsonrpc/id in response frames, strict-client compatibility)
-- **v1.9 (2026-08-02)**: Computer Use (8 screen-control tools, safety switch default off)
-- **v1.8.x**: compare_infer / reason_graph / annotate_infer (virtual annotation + graphical reasoning) / coordinate-format experiments (pixel most stable) / extract_json hardening
-- **v1.7**: locate_object `refine` two-stage refinement (70→20px)
-- **v1.1-1.6**: scan_anomalies (PCB practice), compare_images, Chinese OCR fix (GDI+ rendering)
+- **v1.14 (2026-08-02)**: text_detect (CRAFT optional) + text_zoom (programmatic tiling, high-generalization default; measured reading sub-10px figure labels); 30 tools / 186 tests
+- **v1.13 (2026-08-02)**: scratch_think vision scratchpad (layer stack + adaptive zoom + coordinate chain); paper_reader.py workflow; OCR prompt fix (recall 1→4 blocks); extract_json truncation recovery
+- **v1.12 (2026-08-02)**: ui_refine detection-box semantic editing (VLM remove/label + programmatic geometric merge)
+- **v1.11 (2026-08-02)**: ui_parse / ui_locate (UI structuring + text anchoring) + optional YOLO + SSRF/decompression guard + numpy template matching
+- **v1.10 (2026-08-02)**: som_locate (SoM numbered recursion, final=box/number/cv) + cursor_locate + cv_locate
+- **v1.9 (2026-08-02)**: Computer Use (8 screen tools, safety switch)
+- **v1.7-1.8**: refine two-stage (70→20px), reason_graph, annotate_infer, coordinate-format experiments (pixel most stable)
+- **v1.1-1.6**: scan_anomalies (PCB), compare_images, Chinese OCR fix
+- **Fix log**: MCP response jsonrpc/id (strict-client compatibility), long-JSON truncation recovery
 
 ## Tests & security
 
 ```bash
-python test\run_tests.py   # 142 mock tests, no real key needed
+python test\run_tests.py   # 186 mock tests, no real key needed
 python test\e2e_mimo.py    # real end-to-end (requires VISION_API_KEY)
 ```
 
-- Input images read-only; uploads go only to the configured backend; `out_path` forced inside the output dir; URL images have SSRF & decompression-bomb protection
-- API key lives in local config only; screen-control tools refuse by default (`VISION_ALLOW_SCREEN_CONTROL=1` to enable)
+- Input images read-only; uploads go only to the configured backend; `out_path` forced inside the output dir
+- URL images: SSRF guard (private/link-local/metadata blocked, loopback allowed) + 50MP decompressed limit
+- API key lives in local config only; screen-control tools refuse by default (`VISION_ALLOW_SCREEN_CONTROL=1`)
 
 **Repo**: [github.com/zouyuanqing/vision-primitives-mcp](https://github.com/zouyuanqing/vision-primitives-mcp)

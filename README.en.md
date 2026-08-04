@@ -184,6 +184,7 @@ Key env vars: `VISION_TIMEOUT_S`(120) / `VISION_MAX_IMAGE_MB`(20) / `VISION_SAMP
 
 ## Changelog (condensed)
 
+- **v1.13.2 (2026-08-02)**: paper_reader.py workflow (arXiv/URL/PDF/image → multi-screen → per-screen scratch_think); fixed env-timing pitfall
 - **v1.13.1 (2026-08-02)**: OCR prompt simplification — Qwen2.5-VL recall 1→4 blocks stable, ui_locate 122s→12.8s; full MiMo benchmark with variance ranges
 
 - **v1.10 (2026-08-02)**: SoM numbered locate (`som_locate`, final=box/number/cv), Cursor interactive search, CV fallback (`cv_locate`); 24 tools; 142 tests; locate methodology + grounding VLM selection sections; MCP protocol fix (jsonrpc/id in response frames, strict-client compatibility)

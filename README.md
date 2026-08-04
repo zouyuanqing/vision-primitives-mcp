@@ -184,6 +184,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 
 ## 版本历史（精简）
 
+- **v1.13.2（2026-08-02）**：paper_reader.py 论文阅读工作流（arXiv/URL/PDF/图片 → 多屏截图 → 分屏 scratch_think）；修复环境变量时序坑
 - **v1.13.1（2026-08-02）**：OCR prompt 简化修复——Qwen2.5-VL 召回 1→4 块稳定，ui_locate 链路 122s→12.8s；实测基准补齐（MiMo 全套波动区间、模型分工验证）
 
 - **v1.10（2026-08-02）**：SoM 编号定位（`som_locate`，final=box/number/cv）、Cursor 交互搜索、CV 备选方案（`cv_locate`）；工具 24 个；测试 142 项；定位方法学 + grounding VLM 选型章节；MCP 协议修复（响应帧补 jsonrpc/id，严格客户端兼容）

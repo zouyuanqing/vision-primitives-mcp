@@ -1184,6 +1184,136 @@ def tool_text_detect(args):
     return result
 
 
+# ----------------------------- 程序化切块放大 text_zoom（v1.14）：高泛化插图小字读取 -----------------------------
+
+TEXT_ZOOM_PROMPT = (
+    "这是文档/插图的一个局部放大区域。请列出这块区域内的所有文字内容，逐条输出。"
+    "如果没有任何文字，只输出：无。不要解释，不要输出 JSON。"
+)
+
+
+def _gen_blocks(img, grid, overlap, detector):
+    """生成读取块列表 [(x1,y1,x2,y2), ...]。detector=grid 用网格；=craft 且模型可用时用检测框。"""
+    w, h = img.size
+    if detector == "craft":
+        boxes = _craft_detect(img)
+        if boxes:
+            return [b for b, s in boxes if (b[2] - b[0]) * (b[3] - b[1]) >= 80]
+    # 网格（默认，任何环境可用）
+    cols, rows = int(grid[0]), int(grid[1])
+    cols = max(1, min(8, cols))
+    rows = max(1, min(8, rows))
+    ox = int(w * overlap / cols)
+    oy = int(h * overlap / rows)
+    blocks = []
+    for r in range(rows):
+        for c in range(cols):
+            x1 = max(0, int(c * w / cols) - ox)
+            y1 = max(0, int(r * h / rows) - oy)
+            x2 = min(w, int((c + 1) * w / cols) + ox)
+            y2 = min(h, int((r + 1) * h / rows) + oy)
+            blocks.append((x1, y1, x2, y2))
+    return blocks
+
+
+def _parse_block_text(text):
+    """解析块读取响应：过滤"无文字"标记，返回文字内容（None 表示无文字）。"""
+    if not text:
+        return None
+    t = text.strip()
+    # 无文字标记
+    if t in ("无", "没有", "无文字", "没有文字", "没有任何文字", "None", "none", "N/A", "无文字内容") or "没有任何文字" in t[:30]:
+        return None
+    # 去掉常见前缀解释
+    t = t.replace("这块区域内的文字是：", "").replace("文字内容：", "").replace("内容：", "")
+    t = t.strip(" \n\t-•。.")
+    return t or None
+
+
+def tool_text_zoom(args):
+    """程序化切块放大读取（高泛化）：把图切成网格块（或 CRAFT 检测框），逐块放大交给 VLM 读文字，拼接汇总。
+
+    不依赖模型"自主决定细看哪里"（scratch_think 的 look_at 决策），任何 VLM 都可用；
+    CRAFT 模型存在时自动用检测框代替网格（更少块、更快），无模型时纯网格照跑。
+    """
+    img, raw, label = load_image(args["image"])
+    coords = str(args.get("coords") or "pixel").lower()
+    if coords not in ("pixel", "norm"):
+        raise VisionError(f"coords 必须是 'pixel' 或 'norm'，收到: {coords}")
+    grid = args.get("grid") or [3, 3]
+    if not isinstance(grid, (list, tuple)) or len(grid) != 2:
+        grid = [3, 3]
+    zoom = float(args.get("zoom") or 2.0)
+    zoom = max(1.5, min(6.0, zoom))
+    overlap = float(args.get("overlap") or 0.1)
+    overlap = max(0.0, min(0.4, overlap))
+    detector = str(args.get("detector") or "auto").lower()
+    if detector == "auto":
+        detector = "craft" if _craft_session() is not None else "grid"
+    if detector not in ("grid", "craft"):
+        raise VisionError("detector 必须是 grid/craft/auto")
+    out_path = args.get("out_path")
+
+    key = cache_key(raw, "text_zoom", coords, f"g{grid[0]}x{grid[1]}z{zoom}d{detector}")
+    hit = cache_get(key)
+    if hit is not None:
+        log("cache hit: text_zoom")
+        return hit
+
+    blocks = _gen_blocks(img, grid, overlap, detector)
+    items = []
+    for bx in blocks:
+        bw = bx[2] - bx[0]
+        bh = bx[3] - bx[1]
+        if bw < 16 or bh < 12:
+            continue
+        crop = img.crop(bx)
+        crop = crop.resize((int(crop.width * zoom), int(crop.height * zoom)), Image.LANCZOS)
+        try:
+            text = call_chat([
+                {"role": "system", "content": AUX_VISION_SYSTEM},
+                image_message(TEXT_ZOOM_PROMPT, crop),
+            ])
+        except Exception as e:
+            log("text_zoom 块读取失败:", str(e)[:100])
+            continue
+        parsed = _parse_block_text(text)
+        if parsed:
+            items.append({
+                "text": parsed,
+                "box_pixel": bx,
+                "box_norm": to_norm(bx, img.width, img.height),
+            })
+
+    result = {
+        "count": len(items),
+        "items": items,
+        "blocks_total": len(blocks),
+        "blocks_with_text": len(items),
+        "detector": detector,
+        "image_size": [img.width, img.height],
+        "coords": coords,
+    }
+    if out_path:
+        marked = img.copy()
+        d = ImageDraw.Draw(marked, "RGBA")
+        fnt = _font(max(14, min(img.width, img.height) // 45))
+        for i, it in enumerate(items):
+            b = it["box_pixel"]
+            d.rectangle(b, outline=(80, 160, 80, 220), width=2, fill=(80, 160, 80, 20))
+            d.text((b[0] + 3, b[1] + 3), str(i + 1), fill=(60, 140, 60, 255), font=fnt)
+        out = _resolve_out_path(out_path)
+        if out is None:
+            out = _unique_path("text_zoom")
+        marked.save(out, "PNG")
+        result["mark_image"] = str(out)
+        if coords == "norm":
+            for it in items:
+                it["box_pixel"] = it["box_norm"]
+    cache_set(key, result)
+    return result
+
+
 # ----------------------------- UI 结构化解析（v1.11）：文本锚定 + 类型检测器 -----------------------------
 
 UI_ACTION_VERBS = ("点击", "按下", "输入", "选择", "打开", "关闭", "切换", "滚动", "拖拽", "勾选", "取消勾选", "双击", "右键", "悬停", "聚焦", "清除", "提交", "确认", "取消", "click", "press", "type", "enter", "select", "open", "close", "switch", "scroll", "drag", "check", "submit", "confirm")
@@ -3342,6 +3472,7 @@ HANDLERS = {
     "ui_refine": tool_ui_refine,
     "scratch_think": tool_scratch_think,
     "text_detect": tool_text_detect,
+    "text_zoom": tool_text_zoom,
     "ocr_image": tool_ocr_image,
     "annotate_image": tool_annotate_image,
     "crop_image": tool_crop_image,
@@ -3680,6 +3811,23 @@ TOOLS = [
                 "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm（0-1000 归一化）"},
                 "min_area": {"type": "integer", "description": "最小文本块面积过滤，默认 80"},
                 "out_path": {"type": "string", "description": "保存叠加编号框的图层图（必须位于输出目录内）"},
+            },
+            "required": ["image"],
+        },
+    },
+    {
+        "name": "text_zoom",
+        "description": "程序化切块放大读取（高泛化）：把图切成网格块逐块放大交给 VLM 读文字并拼接；CRAFT 模型存在时自动用检测框代替网格（更少块更快）。不依赖模型自主 zoom 决策，任何 VLM 可用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string"},
+                "grid": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "网格划分 [列,行]，默认 [3,3]，范围 1-8"},
+                "zoom": {"type": "number", "description": "每块放大倍率，默认 2，范围 1.5-6"},
+                "overlap": {"type": "number", "description": "块间重叠比例，默认 0.1，范围 0-0.4"},
+                "detector": {"type": "string", "enum": ["auto", "grid", "craft"], "description": "块生成方式：auto=有 CRAFT 用检测框否则网格（默认）；grid=纯网格；craft=强制检测框"},
+                "coords": {"type": "string", "enum": ["pixel", "norm"], "description": "返回坐标单位：pixel（默认）或 norm"},
+                "out_path": {"type": "string", "description": "保存标注图（有文字的块标绿框+编号）"},
             },
             "required": ["image"],
         },

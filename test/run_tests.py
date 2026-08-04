@@ -146,7 +146,7 @@ def test_protocol_over_stdio(api_base):
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         r = recv()
         names = [t["name"] for t in r["result"]["tools"]]
-        check("tools/list 29 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "ui_refine", "scratch_think", "text_detect", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
+        check("tools/list 30 tools", names == ["describe_image", "analyze_image", "locate_object", "som_locate", "cursor_locate", "ocr_image", "annotate_image", "crop_image", "zoom_region", "vision_health", "annotate_infer", "screen_capture", "screen_info", "screen_click", "screen_move", "screen_drag", "screen_scroll", "screen_type", "screen_key", "cv_locate", "ui_parse", "ui_locate", "ui_refine", "scratch_think", "text_detect", "text_zoom", "compare_infer", "reason_graph", "compare_images", "scan_anomalies"], str(names))
 
         reset_mock()
         MockVisionHandler.responses.append("这是一张测试图片。")
@@ -997,6 +997,33 @@ def test_scratch_think_converge(api_base):
     check("scratch converge note", any("收敛" in str(n) for n in notes), str(notes))
 
 
+
+
+def test_parse_block_text():
+    import vision_primitives_mcp as vb
+    check("tz none1", vb._parse_block_text("无") is None, "")
+    check("tz none2", vb._parse_block_text("这块区域没有任何文字") is None, "")
+    check("tz text", vb._parse_block_text("登录按钮") == "登录按钮", "")
+    check("tz strip", vb._parse_block_text("文字内容：设置") == "设置", "")
+
+
+def test_text_zoom_grid(api_base):
+    import vision_primitives_mcp as vb
+    reset_mock()
+    # 3 块响应：文字 / 无 / 文字
+    MockVisionHandler.responses.append("登录")
+    MockVisionHandler.responses.append("无")
+    MockVisionHandler.responses.append("确认")
+    img = make_img(300, 300, (245, 246, 250))
+    p = tmp_png("tz.png", img)
+    r = vb.tool_text_zoom({"image": p, "grid": [3, 1], "coords": "pixel", "detector": "grid"})
+    check("tz count", r.get("count") == 2, str(r.get("count")))
+    texts = [it["text"] for it in r.get("items", [])]
+    check("tz texts", texts == ["登录", "确认"], str(texts))
+    check("tz detector", r.get("detector") == "grid", str(r.get("detector")))
+    check("tz blocks", r.get("blocks_total") == 3, str(r.get("blocks_total")))
+
+
 def test_health(api_base):
     import vision_primitives_mcp as vb
     res = vb.tool_vision_health()
@@ -1084,6 +1111,9 @@ def main():
     test_scratch_think_loop(api_base)
     test_scratch_think_edit(api_base)
     test_scratch_think_converge(api_base)
+    print("== 程序化切块放大 text_zoom (v1.14) ==")
+    test_parse_block_text()
+    test_text_zoom_grid(api_base)
     print("== health ==")
     test_health(api_base)
     srv.shutdown()

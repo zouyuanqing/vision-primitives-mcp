@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | [English](./README.en.md)
 
-让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 29 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。
+让纯文本模型（DeepSeek / Codex / 任意 MCP 客户端）通过 30 个 MCP 工具获得完整视觉能力：**描述 → 定位（坐标）→ OCR → 标注 → 裁切/放大 → 异常扫描 → 电脑操控**。
 
 > **项目定位**：通用视觉推理桥接层——文本模型 + **任意 VLM** 的通用视觉工作流，本地隐私 + 单文件轻量。**不**与 UI-TARS / CogAgent 等端到端 GUI 模型竞争（它们有专门训练）；核心能力是**无 grounding 模型的兜底定位**：`som_locate`（编号递归）+ `cv_locate`（颜色/模板）让 MiMo 这类无 grounding 训练的模型达到像素级定位（实测 0-4px，接近甚至超过 grounding 模型）。视觉后端可切换（小米 MiMo V2.5 云端 / LM Studio 本地 Qwen3-VL 等），单文件 Python，核心仅依赖 Pillow；numpy 可选（模板匹配 285x 加速）；YOLO 检测器可选（`models/icon_detect.pt` 放置后自动启用）；文本区域检测 CRAFT 可选（`models/craft_text.onnx` 放置后 `text_detect` 启用，需 onnxruntime）。
 
@@ -81,7 +81,7 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 `cv_locate`（颜色分割 + 连通域质心）：纯本地、零 API 调用、实测 0-4px。**仅适用简单目标**（纯色 UI 点击元素、几何图形、固定模板），泛化有限，通用目标请用 VLM 定位。
 
-## 工具一览（29 个）
+## 工具一览（30 个）
 
 | 分类 | 工具 | 作用 |
 |---|---|---|
@@ -92,7 +92,8 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 | | `cv_locate` | **CV 备选**：颜色分割/模板匹配，像素级，仅简单目标 |
 | `ui_parse` / `ui_locate` / `ui_refine` | **UI 结构化解析 / 文本锚定定位 / 检测框语义编辑**：YOLO 像素级检测 + 文本锚定 + VLM 审查修正（删除误检/语义标注/程序化合并） |
 | `scratch_think` | **视觉草稿纸多轮推理**：跨轮层栈（可编辑标注/焦点高亮/历史区域）+ 自适应裁切放大，无 grounding 模型的视觉工作记忆 |
-| `text_detect` | **轻量文本区域检测**（CRAFT onnx，本地零 API）：定位图中所有文字区域 + 叠加编号框图层，按框裁切放大供 VLM 精读（插图小字） |
+| `text_detect` | **轻量文本区域检测**（CRAFT onnx，本地零 API）：定位图中所有文字区域 + 叠加编号框图层 |
+| `text_zoom` | **程序化切块放大读取（高泛化默认路径）**：网格切块逐块放大 VLM 读文字并拼接，任何 VLM 可用；CRAFT 存在时自动用检测框加速 |
 | 文字 | `ocr_image` | 逐文本块 OCR，带 bbox |
 | 图像处理 | `annotate_image` / `crop_image` / `zoom_region` | 标注 / 裁切 / 放大 |
 | 高级推理 | `compare_images` / `compare_infer` / `reason_graph` / `annotate_infer` | 多图对比 / 联合推理 / 交互式图形推理 / 虚拟标注推理 |
@@ -137,6 +138,16 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 ![论文页 demo](docs/paper-demo.png)
 
 **适用**：图文混合论文/文献理解、长文档多区域推理、图表细看。**局限**：多轮 = 多倍延迟（每轮 10-20s），模型可能空转（已答但未设 done），建议 max_rounds ≤ 5。
+
+### 插图小字读取：高泛化优先（text_zoom）
+
+**设计原则**：不依赖专用模型的高泛化路径优先——`text_zoom` 网格切块 + 逐块放大 + VLM 精读，任何视觉后端可用。实测（Figure 1 图内 <10px 标注）：网格模式读出 "False Stop / Class Settings / False Direction"（此前 OCR 读不到、CRAFT 框不住）；CRAFT 检测器只是可选加速器，极小小字场景网格反而更优。
+
+```bash
+# 高泛化默认（无任何专用模型）
+python -m vision_primitives_mcp --tool text_zoom  # 或通过 MCP 调用
+# 参数：grid [3,2] / zoom 3 / detector auto|grid|craft
+```
 
 ### 论文阅读工作流（paper_reader.py）
 
@@ -185,7 +196,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 
 ## 版本历史（精简）
 
-- **v1.14（2026-08-02）**：`text_detect` 轻量文本区域检测（CRAFT onnx 本地推理，3s/288 块；检测定位文字 → 按框裁切放大 VLM 精读，解决插图小字整图不可读；overlay 编号框图层输出）
+- **v1.14（2026-08-02）**：`text_detect` 轻量文本区域检测（CRAFT onnx，可选加速器）；`text_zoom` **程序化切块放大（高泛化默认路径）**——网格逐块放大 VLM 精读，实测读出图内 <10px 标注（False Stop/Class Settings），任何 VLM 可用；30 工具；186 测试
 - **v1.13.3（2026-08-02）**：修复长 JSON 输出截断——`extract_json` 增加数组截断容错（逐元素提取完整对象，丢弃截断元素）；OCR 调用 `max_tokens` 4096→8192（大表格 OCR 响应被截断导致只回 1 块）；实测 MiMo 表格 OCR 135 块 / Qwen2.5-VL 34 块全部正常
 - **v1.13.2（2026-08-02）**：paper_reader.py 论文阅读工作流（arXiv/URL/PDF/图片 → 多屏截图 → 分屏 scratch_think）；修复环境变量时序坑
 - **v1.13.1（2026-08-02）**：OCR prompt 简化修复——Qwen2.5-VL 召回 1→4 块稳定，ui_locate 链路 122s→12.8s；实测基准补齐（MiMo 全套波动区间、模型分工验证）

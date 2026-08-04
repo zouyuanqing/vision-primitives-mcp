@@ -211,7 +211,7 @@ def clamp_box(box, w, h):
     return _clamp_list(box, w, h)
 
 def extract_json(text):
-    """从模型输出中稳健提取 JSON 对象或数组（容忍代码块、多余尾巴、LaTeX 等）。"""
+    """从模型输出中稳健提取 JSON 对象或数组（容忍代码块、多余尾巴、LaTeX、截断数组等）。"""
     text = (text or "").strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
@@ -219,6 +219,27 @@ def extract_json(text):
         return json.loads(text)
     except Exception:
         pass
+    # 截断数组容错：数组模式下逐元素 raw_decode，收下所有完整元素，丢弃截断的最后一个
+    # （大输出被 max_tokens 截断时，完整元素仍有效）
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        dec = json.JSONDecoder()
+        objs = []
+        i = text.index("[") + 1
+        n = len(text)
+        while i < n:
+            while i < n and text[i] in " \n\r\t,":
+                i += 1
+            if i >= n or text[i] == "]":
+                break
+            try:
+                obj, j = dec.raw_decode(text[i:])
+                objs.append(obj)
+                i += j
+            except Exception:
+                break  # 截断元素，丢弃
+        if objs:
+            return objs
     # 逐位置 raw_decode：处理"JSON + 尾巴"或"文本 + JSON"混合输出
     dec = json.JSONDecoder()
     for i in range(len(text)):
@@ -972,6 +993,10 @@ def tool_scratch_think(args):
             elif e.get("action") == "remove":
                 pad.remove_annotation(b_orig)
 
+        # answer 先解析（同一轮 answer+look_at 时收敛判断可用本轮 answer）
+        if dec.get("answer"):
+            answer = str(dec["answer"])
+
         # look_at：自适应裁切放大
         looked = False
         la = dec.get("look_at")
@@ -987,15 +1012,14 @@ def tool_scratch_think(args):
                 ok = pad.zoom_to(region, zoom=z)
                 rounds_log.append({"round": rnd + 1, "action": "look_at", "region": [int(v) for v in region], "zoom": z, "ok": ok})
                 looked = True
-                # 收敛检测：放大区域不再缩小 → 停止（防死循环）
-                if last_area is not None and area >= last_area * 0.85:
+                # 收敛检测：已有答案且 zoom 区域不再缩小 → 停止（防死循环）
+                # 注意：无答案时继续（模型可能还在细看），受 max_rounds 兜底
+                if answer and last_area is not None and area >= last_area * 0.85:
                     rounds_log.append({"round": rnd + 1, "note": "收敛：zoom 区域未缩小"})
                     break
                 last_area = area
 
-        # answer / done
-        if dec.get("answer"):
-            answer = str(dec["answer"])
+        # done
         done = dec.get("done") in (True, "true", 1, "1")
         if answer or done:
             rounds_log.append({"round": rnd + 1, "action": "answer", "answer": answer})
@@ -1865,7 +1889,7 @@ def tool_ocr_image(args):
     text = call_chat([
         {"role": "system", "content": AUX_VISION_SYSTEM},
         image_message(prompt, img),
-    ])
+    ], max_tokens=8192)
     rows = extract_json(text)
     if isinstance(rows, dict):
         # 部分模型（Qwen2.5-VL）返回单个对象而非数组

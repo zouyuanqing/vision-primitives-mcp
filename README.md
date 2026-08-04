@@ -184,6 +184,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 
 ## 版本历史（精简）
 
+- **v1.13.3（2026-08-02）**：修复长 JSON 输出截断——`extract_json` 增加数组截断容错（逐元素提取完整对象，丢弃截断元素）；OCR 调用 `max_tokens` 4096→8192（大表格 OCR 响应被截断导致只回 1 块）；实测 MiMo 表格 OCR 135 块 / Qwen2.5-VL 34 块全部正常
 - **v1.13.2（2026-08-02）**：paper_reader.py 论文阅读工作流（arXiv/URL/PDF/图片 → 多屏截图 → 分屏 scratch_think）；修复环境变量时序坑
 - **v1.13.1（2026-08-02）**：OCR prompt 简化修复——Qwen2.5-VL 召回 1→4 块稳定，ui_locate 链路 122s→12.8s；实测基准补齐（MiMo 全套波动区间、模型分工验证）
 

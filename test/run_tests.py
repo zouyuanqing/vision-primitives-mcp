@@ -985,10 +985,10 @@ def test_scratch_think_edit(api_base):
 def test_scratch_think_converge(api_base):
     import vision_primitives_mcp as vb
     reset_mock()
-    # 两次 look_at 区域一样大（不缩小）-> 收敛 break
+    # 第一轮 look_at（无答案）；第二轮 answer + 同区域 look_at -> 收敛 break
     MockVisionHandler.responses.append(json.dumps({"answer": None, "look_at": {"region": [100, 100, 300, 300], "zoom": 2}, "done": False}))
-    MockVisionHandler.responses.append(json.dumps({"answer": None, "look_at": {"region": [100, 100, 300, 300], "zoom": 2}, "done": False}))
-    MockVisionHandler.responses.append(json.dumps({"answer": "x", "done": True}))
+    MockVisionHandler.responses.append(json.dumps({"answer": "x", "look_at": {"region": [100, 100, 300, 300], "zoom": 2}, "done": False}))
+    MockVisionHandler.responses.append(json.dumps({"answer": "x", "look_at": None, "done": True}))
     img = make_img(400, 300, (245, 246, 250))
     p = tmp_png("scratch_cvg.png", img)
     r = vb.tool_scratch_think({"image": p, "question": "q", "max_rounds": 5})

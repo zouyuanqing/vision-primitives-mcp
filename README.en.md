@@ -184,6 +184,7 @@ Key env vars: `VISION_TIMEOUT_S`(120) / `VISION_MAX_IMAGE_MB`(20) / `VISION_SAMP
 
 ## Changelog (condensed)
 
+- **v1.13.3 (2026-08-02)**: fixed long-JSON truncation — `extract_json` now recovers truncated arrays (extracts complete elements, drops the cut tail); OCR `max_tokens` 4096→8192 (large table OCR responses were cut, returning 1 block); measured MiMo table OCR 135 blocks / Qwen2.5-VL 34 blocks, all correct
 - **v1.13.2 (2026-08-02)**: paper_reader.py workflow (arXiv/URL/PDF/image → multi-screen → per-screen scratch_think); fixed env-timing pitfall
 - **v1.13.1 (2026-08-02)**: OCR prompt simplification — Qwen2.5-VL recall 1→4 blocks stable, ui_locate 122s→12.8s; full MiMo benchmark with variance ranges
 

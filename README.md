@@ -137,6 +137,20 @@ MiMo V2.5（云端）/ Qwen3-VL-8B（本地 LM Studio）/ 任意视觉 VLM
 
 **适用**：图文混合论文/文献理解、长文档多区域推理、图表细看。**局限**：多轮 = 多倍延迟（每轮 10-20s），模型可能空转（已答但未设 done），建议 max_rounds ≤ 5。
 
+### 论文阅读工作流（paper_reader.py）
+
+配套脚本 [paper_reader.py](paper_reader.py)：arXiv/URL/PDF/图片 → 多屏截图 → 分屏 scratch_think 理解 → 结构化摘要。
+
+```bash
+python paper_reader.py 2509.21552                      # arXiv ID（自动查最新版本）
+python paper_reader.py https://example.com/paper.html  # 任意 URL
+python paper_reader.py paper.pdf                        # 本地 PDF（浏览器渲染，零额外依赖）
+python paper_reader.py figure.png                      # 本地图片
+python paper_reader.py 2509.21552 --screens 3 --rounds 3  # 3 屏（标题摘要/方法/实验）
+```
+
+依赖：playwright（截图）+ 本地/云端视觉后端（默认 Qwen2.5-VL-7B）。实测：GUI-Cursor 论文 3 屏流程，首屏一轮 22s 准确回答方法/创新/贡献。
+
 ## 快速上手
 
 **UI 检测器（可选）**：下载 [OmniParser icon_detect](https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.pt)（39.7MB，MIT）放入 `models/icon_detect.pt`，`ui_parse` 自动启用 YOLO 像素级元素检测（需 `pip install ultralytics`）。

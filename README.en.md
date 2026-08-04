@@ -137,6 +137,20 @@ Coordinates: `pixel` (default, most accurate in practice) or `norm` (0-1000 norm
 
 **Best for**: figure-text mixed papers/literature, long-document multi-region reasoning, chart detail inspection. **Limits**: rounds multiply latency (10-20s each); models may idle after answering (done not set); keep max_rounds ≤ 5.
 
+### Paper reading workflow (paper_reader.py)
+
+Companion script [paper_reader.py](paper_reader.py): arXiv/URL/PDF/image → multi-screen capture → per-screen scratch_think → structured summary.
+
+```bash
+python paper_reader.py 2509.21552                      # arXiv ID (auto-latest version)
+python paper_reader.py https://example.com/paper.html  # any URL
+python paper_reader.py paper.pdf                        # local PDF (browser-rendered, zero extra deps)
+python paper_reader.py figure.png                      # local image
+python paper_reader.py 2509.21552 --screens 3 --rounds 3  # 3 screens (abstract/method/experiments)
+```
+
+Deps: playwright (capture) + local/cloud vision backend (default Qwen2.5-VL-7B). Measured: GUI-Cursor paper, first screen answered method/innovation/contribution in 22s.
+
 ## Quick start
 
 **UI detector (optional)**: download [OmniParser icon_detect](https://huggingface.co/microsoft/OmniParser-v2.0/resolve/main/icon_detect/model.pt) (39.7MB, MIT) into `models/icon_detect.pt`; `ui_parse` auto-enables pixel-level YOLO element detection (requires `pip install ultralytics`).

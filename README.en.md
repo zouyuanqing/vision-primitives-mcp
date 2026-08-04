@@ -35,6 +35,7 @@ Test image (900×600, known element positions): red circle center (150,140), gre
 | MiMo V2.5 (cloud) | 10-64px (variance) | 79-97px (variance) | 33-82px (variance) | 13-123px (variance) | 15-25s | 21.5s | — |
 | MiMo + som-cv (fallback) | **0px** | **4px** | — | — | 10-12s | — | — |
 | Qwen3-VL-8B (local) | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s |
+| GLM-4v-flash (Zhipu cloud) | 89px | 84px | 191px | 145px | 1.5-3.3s | — | — |
 | **Qwen2.5-VL-7B (local)** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
 
 **Capability matrix** (describe / OCR / fallback locate / text anchoring / multi-round reasoning):
@@ -43,6 +44,7 @@ Test image (900×600, known element positions): red circle center (150,140), gre
 |---|---|---|---|---|---|
 | MiMo V2.5 (cloud) | 4.7s ✓ | 8.9s, 4/4 blocks | **0px** (3.2s) | 8.6s ✓ | 45.7s 3 rounds (missed trend) |
 | **Qwen2.5-VL-7B (local)** | 1.1s ✓ | 3.5-4.6s, 4/4 blocks | **0px** | 12.8s ✓ | **9.6s 1 round, correct** |
+| GLM-4v-flash (Zhipu cloud) | 1.5s ✓ | 2.0s, 3/4 blocks (max_tokens≤1024) | 53px (wrong cell) | — | — |
 | Qwen3-VL-8B (local) | ~10s | 23s, 4/4 blocks | 0px | — | — |
 
 **Ablation: locate error roots in "resolution dilution"** — input 0.5x→208px / 2x→70px / isolated crop→**0-3px**. Whole-image locate error is not model ability but too few vision tokens per object; **"coarse locate → crop → precise locate" pipelines are the fix** (`som_locate` recursion, `final="cv"`, `text_zoom` grid all build on this).
@@ -93,7 +95,7 @@ VISION_MODEL = "mimo-v2.5"                              # or qwen/qwen2.5-vl-7b
 VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 ```
 
-**Model selection**: locate/review/multi-round reasoning → **Qwen2.5-VL-7B** (grounding specialist + non-thinking, 1.3-1.7s/call); MiMo is general but high locate variance — use `VISION_SAMPLES=3`; Qwen3-VL-8B only for describe/OCR.
+**Model selection**: locate/review/multi-round reasoning → **Qwen2.5-VL-7B** (grounding specialist + non-thinking, 1.3-1.7s/call); MiMo is general but high locate variance — use `VISION_SAMPLES=3`; Qwen3-VL-8B only for describe/OCR; **GLM-4v-flash** (Zhipu) excellent speed (1.5-3.3s) for describe/OCR/coarse locate, weak locate accuracy (84-191px), `max_tokens` capped at 1024 (set `VISION_MAX_TOKENS=1024`)
 
 **Optional enhancements** (all "faster when present, full function without"):
 

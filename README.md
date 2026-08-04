@@ -35,6 +35,7 @@ MiMo V2.5（云端）/ Qwen2.5-VL-7B（本地 LM Studio）/ 任意视觉 VLM
 | MiMo V2.5（云端） | 10-64px（波动） | 79-97px（波动） | 33-82px（波动） | 13-123px（波动） | 15-25s | 21.5s | — |
 | MiMo + som-cv（兜底管线） | **0px** | **4px** | — | — | 10-12s | — | — |
 | Qwen3-VL-8B（本地） | 90px | 164px | 77px | 123px | 10-30s | 29.4s | >357s |
+| GLM-4v-flash（智谱云） | 89px | 84px | 191px | 145px | 1.5-3.3s | — | — |
 | **Qwen2.5-VL-7B（本地）** | **28px** | **27px** | **15px** | 123px | **1.3-1.7s** | **12.4s** | **12.6s** |
 
 **能力矩阵**（describe / OCR / 兜底定位 / 文本锚定 / 多轮推理）：
@@ -43,6 +44,7 @@ MiMo V2.5（云端）/ Qwen2.5-VL-7B（本地 LM Studio）/ 任意视觉 VLM
 |---|---|---|---|---|---|
 | MiMo V2.5（云端） | 4.7s ✓ | 8.9s，4/4 块 | **0px**（3.2s） | 8.6s ✓ | 45.7s 3轮（漏答图趋势） |
 | **Qwen2.5-VL-7B（本地）** | 1.1s ✓ | 3.5-4.6s，4/4 块 | **0px** | 12.8s ✓ | **9.6s 1轮全对** |
+| GLM-4v-flash（智谱云） | 1.5s ✓ | 2.0s，3/4 块（max_tokens≤1024 限制） | 53px（格子选偏） | — | — |
 | Qwen3-VL-8B（本地） | ~10s | 23s，4/4 块 | 0px | — | — |
 
 **消融：定位误差根因是"分辨率稀释"**——输入 0.5x→208px / 2x→70px / 目标单独裁切→**0-3px**。整图定位差不是模型能力问题，是每个对象分到的视觉 token 太少；**"粗定位 → 裁切 → 精定位"的管线是正解**（`som_locate` 递归、`final="cv"`、`text_zoom` 网格均基于此）。
@@ -93,7 +95,7 @@ VISION_MODEL = "mimo-v2.5"                              # 或 qwen/qwen2.5-vl-7b
 VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 ```
 
-**模型选型**：定位/审查/多轮推理首选 **Qwen2.5-VL-7B**（grounding 专才 + 非思考型，1.3-1.7s/次）；MiMo 通用但定位波动大，需 `VISION_SAMPLES=3`；Qwen3-VL-8B 仅描述/OCR 场景考虑。
+**模型选型**：定位/审查/多轮推理首选 **Qwen2.5-VL-7B**（grounding 专才 + 非思考型，1.3-1.7s/次）；MiMo 通用但定位波动大，需 `VISION_SAMPLES=3`；Qwen3-VL-8B 仅描述/OCR 场景考虑；**GLM-4v-flash**（智谱）速度优秀（1.5-3.3s）适合 describe/OCR/粗定位，定位精度弱（84-191px），且 `max_tokens` 上限 1024（需 `VISION_MAX_TOKENS=1024`）
 
 **可选增强**（全部"有则加速、无则照跑"）：
 

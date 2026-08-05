@@ -49,6 +49,17 @@ Test image (900×600, known element positions): red circle center (150,140), gre
 
 **Ablation: locate error roots in "resolution dilution"** — input 0.5x→208px / 2x→70px / isolated crop→**0-3px**. Whole-image locate error is not model ability but too few vision tokens per object; **"coarse locate → crop → precise locate" pipelines are the fix** (`som_locate` recursion, `final="cv"`, `text_zoom` grid all build on this).
 
+### ZeroBench evaluation (vision-reasoning benchmark, continuously tracked)
+
+Workflow: [benchmarks/zerobench/](benchmarks/zerobench/). Baseline (MiMo V2.5 direct + pass@5 sampling, 2026-08-02):
+
+| Split | Questions | Hits | numeric hit rate |
+|---|---|---|---|
+| Main | 100 (84 numeric) | 2 | **2.4%** (above release SOTA 0%) |
+| Subquestions | 334 (257 numeric) | 183 | **71.2%** |
+
+Conclusion: main questions need multi-step compositional visual reasoning (model-capability bottleneck); **subquestions are the toolchain home** — decomposed single-step problems reach 71% with MiMo + sampling, validating "decompose + sample" as a path for weak models on hard benchmarks. Re-run on every model/toolchain upgrade.
+
 ## Tool overview (30 tools)
 
 | Category | Tools | Purpose |
@@ -117,6 +128,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 
 ## Changelog (condensed)
 
+- **v1.14.1 (2026-08-02)**: ZeroBench evaluation workflow (benchmarks/zerobench): main 2.4% / sub 71.2% numeric baseline, resume + auto-judge
 - **v1.14 (2026-08-02)**: text_detect (CRAFT optional) + text_zoom (programmatic tiling, high-generalization default; measured reading sub-10px figure labels); 30 tools / 186 tests
 - **v1.13 (2026-08-02)**: scratch_think vision scratchpad (layer stack + adaptive zoom + coordinate chain); paper_reader.py workflow; OCR prompt fix (recall 1→4 blocks); extract_json truncation recovery
 - **v1.12 (2026-08-02)**: ui_refine detection-box semantic editing (VLM remove/label + programmatic geometric merge)

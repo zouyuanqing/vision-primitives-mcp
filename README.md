@@ -49,6 +49,17 @@ MiMo V2.5（云端）/ Qwen2.5-VL-7B（本地 LM Studio）/ 任意视觉 VLM
 
 **消融：定位误差根因是"分辨率稀释"**——输入 0.5x→208px / 2x→70px / 目标单独裁切→**0-3px**。整图定位差不是模型能力问题，是每个对象分到的视觉 token 太少；**"粗定位 → 裁切 → 精定位"的管线是正解**（`som_locate` 递归、`final="cv"`、`text_zoom` 网格均基于此）。
 
+### ZeroBench 评测（视觉推理基准，持续追踪）
+
+ZeroBench（"Impossible" 基准，发布时 SOTA 0%）评测工作流见 [benchmarks/zerobench/](benchmarks/zerobench/)。基线（MiMo V2.5 直答 + pass@5 采样，2026-08-02）：
+
+| 数据集 | 题数 | 命中 | numeric 命中率 |
+|---|---|---|---|
+| 主问题 | 100（numeric 84） | 2 | **2.4%**（超发布时 SOTA 0%） |
+| 子问题集 | 334（numeric 257） | 183 | **71.2%** |
+
+结论：主问题考多步组合视觉推理（模型能力瓶颈）；**子问题集是工具链主场**——拆解后的单步问题 MiMo 直答 + 采样达 71%，验证"难题拆解 + 采样"是弱模型打硬基准的可行路径。每次模型/工具升级在此基线上重跑对比。
+
 ## 工具一览（30 个）
 
 | 分类 | 工具 | 作用 |
@@ -117,6 +128,7 @@ VISION_OUTPUT_DIR = '/path/to/vision-primitives-mcp/generated'
 
 ## 版本历史（精简）
 
+- **v1.14.1（2026-08-02）**：ZeroBench 评测工作流（benchmarks/zerobench）：主问题 2.4% / 子问题 71.2% numeric 基线，断点续跑 + 自动判分
 - **v1.14（2026-08-02）**：text_detect（CRAFT 可选）+ text_zoom（程序化切块，高泛化默认路径，实测读出 <10px 图内标注）；30 工具 / 186 测试
 - **v1.13（2026-08-02）**：scratch_think 视觉草稿纸（层栈 + 自适应 zoom + 坐标链）；paper_reader.py 论文阅读工作流；OCR prompt 修复（召回 1→4 块）；extract_json 截断容错
 - **v1.12（2026-08-02）**：ui_refine 检测框语义编辑（VLM 删除误检/标注 + 程序化几何合并）

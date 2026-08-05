@@ -6,7 +6,7 @@ import io, sys, os, json, time, re, base64, urllib.request, argparse
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 MIMO_BASE = 'https://api.xiaomimimo.com/v1'
-MIMO_KEY = 'sk-c2uvfccumc9jiu6yq4otwn98q8n4hkenhnm921fom5ghw43d'
+MIMO_KEY = os.environ.get("MIMO_API_KEY", "")  # 从环境变量读取，勿硬编码
 
 os.environ['VISION_API_BASE'] = 'https://api.xiaomimimo.com/v1'
 os.environ['VISION_API_KEY'] = MIMO_KEY

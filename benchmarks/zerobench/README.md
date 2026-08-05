@@ -32,7 +32,7 @@ python stats.py
 
 - **视觉**：MiMo V2.5 云端直答（FINAL ANSWER 格式强制 + 采样温度 0/0.9）
 - **评测**：numeric 数字匹配（容差 0.01）；mcq/yes_no/open 在 FINAL ANSWER 后找答案字符串
-- 依赖：pyarrow（读 parquet）、Pillow（图片缩放）、MiMo API key
+- 依赖：pyarrow（读 parquet）、Pillow（图片缩放）；MiMo API key 通过环境变量 `MIMO_API_KEY` 提供（脚本不硬编码）
 
 ## 结论（第一轮基线）
 
